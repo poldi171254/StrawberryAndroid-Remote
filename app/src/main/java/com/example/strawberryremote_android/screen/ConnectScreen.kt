@@ -52,6 +52,7 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
                 // Set a connection timeout (e.g., 5 seconds)
                 socket.connect(InetSocketAddress(ipAddress, port), 2000)
                 Log.d("MyRemote", "Connected to server at $ipAddress:$port")
+                sharedViewModel.socket = socket
                 true // Connection successful
             } catch (e: SocketTimeoutException) {
                 Log.d("MyRemote", "Connection timed out: ${e.message}")
