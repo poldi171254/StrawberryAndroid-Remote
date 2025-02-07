@@ -22,6 +22,8 @@ uiToolingPreview = "1.7.7"
 navigationRuntimeKtx = "2.8.6"
 navigationCompose = "2.8.6"
 materialVersion = "1.12.0"
+foundationLayoutAndroid = "1.7.2"
+foundationAndroid = "1.7.2"
 
 [libraries]
 androidx-activity-compose-v130 = { module = "androidx.activity:activity-compose", version.ref = "activityComposeVersion" }
@@ -52,6 +54,8 @@ ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview", versio
 androidx-navigation-runtime-ktx = { group = "androidx.navigation", name = "navigation-runtime-ktx", version.ref = "navigationRuntimeKtx" }
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 material = { group = "com.google.android.material", name = "material", version.ref = "materialVersion" }
+androidx-foundation-layout-android = { group = "androidx.compose.foundation", name = "foundation-layout-android", version.ref = "foundationLayoutAndroid" }
+androidx-foundation-android = { group = "androidx.compose.foundation", name = "foundation-android", version.ref = "foundationAndroid" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -1,12 +1,19 @@
 package com.example.strawberryremote_android.screen
 
 import android.util.Log
+import androidx.compose.foundation.background
 import androidx.compose.runtime.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.example.strawberryremote_android.util.SharedViewModel
@@ -19,6 +26,7 @@ import nw.remote.PlayerState
 import nw.remote.RequestNextTrack
 import nw.remote.RequestPause
 import nw.remote.RequestPlay
+import nw.remote.RequestPreviousTrack
 import java.io.OutputStream
 
 @Composable
@@ -121,80 +129,177 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
     }
 
     // UI for the SongInfoScreen
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(text = "Title: $title")
-        Text(text = "Album: $album")
-        Text(text = "Artist: $artist")
-        Text(text = "Year: $year")
-        Text(text = "Genre: $genre")
-        Text(text = "Playcount: $playCount")
-        Text(text = "Songlength: $songLength")
-        Text(text = "Status Message: $statusMessage")
-        Spacer(modifier = Modifier.height(16.dp))
-        Row(
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Button(onClick = {
-                // Create a Play Track message
-                val requestPlayTrack = RequestPlay.newBuilder().setPlay(true).build()
-                val message = Message.newBuilder()
-                .setType(MsgType.MSG_TYPE_REQUEST_PLAY)
-                    .setRequestPlay(requestPlayTrack)
-                    .build()
-                sendMessageAndWaitForResponse(message)
-            }) {
-                Text(text = "Play")
-            }
-            Button(onClick = {
-                // Create a Pause message
-                val requestPause = RequestPause.newBuilder().setPause(true).build()
-                val message = Message.newBuilder()
-                    .setType(MsgType.MSG_TYPE_REQUEST_PAUSE)
-                    .setRequestPause(requestPause)
-                    .build()
-                // Send the message and wait for a response
-                sendMessageAndWaitForResponse(message)
-            }) {
-                Text(text = "Pause")
-            }
-            Button(onClick = {
-                // Create a RequestNextTrack message
-                val requestNextTrack = RequestNextTrack.newBuilder().setNext(true).build()
-                val message = Message.newBuilder()
-                    .setType(MsgType.MSG_TYPE_REQUEST_NEXT)
-                    .setRequestNextTrack(requestNextTrack)
-                    .build()
+    Scaffold(
+        topBar = {
+            AppBar() // Ensure AppBar is defined here
+        },
+        content = { padding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding) // Use Scaffold's padding to account for AppBar
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.SpaceBetween // Push buttons to the bottom
+            ) {
+                // Song info fields
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalAlignment = Alignment.Start
+                ) {
+                    SongInfoField(label = "Title", value = title)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    SongInfoField(label = "Album", value = album)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    SongInfoField(label = "Artist", value = artist)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    SongInfoField(label = "Year", value = year)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    SongInfoField(label = "Genre", value = genre)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    SongInfoField(label = "Play Count", value = playCount)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    SongInfoField(label = "Song Length", value = songLength)
+                }
 
-                // Send the message and wait for a response
-                sendMessageAndWaitForResponse(message)
-            }) {
-                Text(text = "Next")
-            }
-            Button(onClick = {
-                // Create a RequestNextTrack message
-                val requestNextTrack = RequestNextTrack.newBuilder().setNext(true).build()
-                val message = Message.newBuilder()
-                    .setType(MsgType.MSG_TYPE_REQUEST_NEXT)
-                    .setRequestNextTrack(requestNextTrack)
-                    .build()
+                // Status message
+                Row (
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 5.dp),
+                ) {
+                    Text(
+                        text = "Player Status:",
+                        modifier = Modifier.width(100.dp), // Fixed width for labels
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .background(Color(0xFFADD8E6)) // Light blue background
+                            .padding(8.dp)
+                    ) {
+                        Text(text = statusMessage)
+                    }
+                }
 
-                // Send the message and wait for a response
-                sendMessageAndWaitForResponse(message)
-            }) {
-                Text(text = "Previous")
+                // Buttons at the bottom
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    Button(
+                        onClick = {
+                            val requestPlayTrack = RequestPlay.newBuilder().setPlay(true).build()
+                            val message = Message.newBuilder()
+                                .setType(MsgType.MSG_TYPE_REQUEST_PLAY)
+                                .setRequestPlay(requestPlayTrack)
+                                .build()
+                            sendMessageAndWaitForResponse(message)
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Text(text = "Play")
+                    }
+                    Button(
+                        onClick = {
+                            val requestPause = RequestPause.newBuilder().setPause(true).build()
+                            val message = Message.newBuilder()
+                                .setType(MsgType.MSG_TYPE_REQUEST_PAUSE)
+                                .setRequestPause(requestPause)
+                                .build()
+                            sendMessageAndWaitForResponse(message)
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Text(text = "Pause")
+                    }
+                    Button(
+                        onClick = {
+                            val requestNextTrack = RequestNextTrack.newBuilder().setNext(true).build()
+                            val message = Message.newBuilder()
+                                .setType(MsgType.MSG_TYPE_REQUEST_NEXT)
+                                .setRequestNextTrack(requestNextTrack)
+                                .build()
+                            sendMessageAndWaitForResponse(message)
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Text(text = "Next")
+                    }
+                    Button(
+                        onClick = {
+                            val requestPreviousTrack = RequestPreviousTrack.newBuilder().setPrevious(true).build()
+                            val message = Message.newBuilder()
+                                .setType(MsgType.MSG_TYPE_REQUEST_PREVIOUS)
+                                .setRequestPreviousTrack(requestPreviousTrack)
+                                .build()
+                            sendMessageAndWaitForResponse(message)
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Text(text = "Previous")
+                    }
+                }
+
+                // Finish button
+                Button(
+                    onClick = {
+                        val activity: MainActivity = MainActivity()
+                        activity.finish()
+                        System.exit(0)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary,
+                        contentColor = MaterialTheme.colorScheme.onSecondary
+                    )
+                ) {
+                    Text(text = "Finish")
+                }
             }
-            // Other buttons (Play, Pause, Previous, Finish) can be added here
         }
-        Spacer(modifier = Modifier.height(8.dp))
-        Button(onClick = { /* Disconnect and close the app */ }) {
-            Text(text = "Finish")
+    )
+}
+
+@Composable
+fun SongInfoField(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "$label:",
+            modifier = Modifier.width(100.dp), // Fixed width for labels
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .background(Color(0xFFADD8E6)) // Light blue background
+                .padding(8.dp)
+        ) {
+            Text(text = value)
         }
     }
 }
