@@ -1,77 +1,98 @@
-import com.google.protobuf.gradle.id
+import java.util.Properties
+import java.io.FileInputStream
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-
-    id("kotlin-android")
     id("com.google.protobuf")
 }
 
+// Load signing credentials from keystore.properties (not committed to VCS)
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+
 android {
-    namespace = "com.example.strawberryremote_android"
-    compileSdk = 35
+    namespace = "com.zudiewiener.strawberryremote"
+    compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.strawberryremote_android"
+        applicationId = "com.zudiewiener.strawberryremote"
         minSdk = 29
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
         }
+        debug {
+            isMinifyEnabled = false
+        }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
-    kotlinOptions {
-        jvmTarget = "11"
-    }
+
     buildFeatures {
         compose = true
     }
 }
 
 dependencies {
-
+    // Core
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.constraintlayout)
+    implementation(libs.material)
+
+    // Lifecycle
     implementation(libs.androidx.lifecycle.runtime.ktx)
+
+    // Compose
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-
-
-    implementation (libs.ui)
-    implementation (libs.ui.tooling.preview)
-    implementation (libs.androidx.activity.compose.v130)
-
-    implementation (libs.kotlin.stdlib)
-    implementation (libs.androidx.appcompat)
-    implementation (libs.androidx.core.ktx.v160)
-    implementation (libs.protobuf.java)
-    implementation (libs.protobuf.kotlin)
-    implementation (libs.androidx.constraintlayout)
-    implementation (libs.androidx.lifecycle.runtime.ktx.v231)
-    implementation(libs.androidx.navigation.runtime.ktx)
-    implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.foundation.layout.android)
     implementation(libs.androidx.foundation.android)
 
+    // Navigation
+    implementation(libs.androidx.navigation.runtime.ktx)
+    implementation(libs.androidx.navigation.compose)
+
+    // Protobuf
+    implementation(libs.protobuf.java)
+    implementation(libs.protobuf.kotlin)
+
+    // Test
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -81,24 +102,21 @@ dependencies {
     debugImplementation(libs.androidx.ui.test.manifest)
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+    }
+}
+
 protobuf {
     protoc {
-        artifact = "com.google.protobuf:protoc:3.21.2"
-    }
-    plugins {
-        id("java") {
-            artifact = "io.grpc:protoc-gen-grpc-java:1.47.0"
-        }
+        artifact = "com.google.protobuf:protoc:3.24.0"
     }
     generateProtoTasks {
-        all().forEach {
-            it.plugins {
-                id("java") {
-                }
-            }
-            it.builtins {
-                id("kotlin") {
-                }
+        all().forEach { task ->
+            task.builtins {
+                create("kotlin")
+                create("java")
             }
         }
     }

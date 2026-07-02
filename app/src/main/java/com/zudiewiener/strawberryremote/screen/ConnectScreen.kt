@@ -1,0 +1,218 @@
+package com.zudiewiener.strawberryremote.screen
+
+import android.util.Log
+import androidx.activity.compose.LocalActivity
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import androidx.navigation.NavController
+import com.zudiewiener.strawberryremote.util.ConnectionState
+import com.zudiewiener.strawberryremote.util.SharedViewModel
+import kotlinx.coroutines.launch
+import java.net.NetworkInterface
+
+@Composable
+fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel) {
+    val savedConfig by sharedViewModel.savedConfig.collectAsState()
+    var ipAddress by remember { mutableStateOf("") }
+    var port by remember { mutableStateOf("8888") }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+    val connectionState by sharedViewModel.connectionState.collectAsState()
+    val activity = LocalActivity.current
+
+    LaunchedEffect(savedConfig) {
+        if (savedConfig != null) {
+            ipAddress = savedConfig!!.ip
+            port = savedConfig!!.port.toString()
+        } else {
+            val localIp = getLocalIpAddress()
+            if (localIp != null) {
+                val subnet = localIp.substringBeforeLast('.')
+                ipAddress = "$subnet."
+            }
+        }
+    }
+
+    LaunchedEffect(connectionState) {
+        when (val state = connectionState) {
+            is ConnectionState.Connected -> {
+                navController.navigate("songInfo")
+            }
+            is ConnectionState.Error -> {
+                snackbarHostState.showSnackbar(state.message)
+            }
+            else -> Unit
+        }
+    }
+
+    Scaffold(
+        containerColor = Color.Transparent,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        topBar = { AppBar() }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(20.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.Start
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.Start
+            ) {
+                Text(
+                    text = "Strawberry Music Player Remote",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(40.dp))
+                Text(
+                    text = "Enter the player's IP address and port",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = ipAddress,
+                    onValueChange = { ipAddress = it },
+                    label = {
+                        Text(
+                            text = "Server IP Address",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    },
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = port,
+                    onValueChange = { port = it },
+                    label = {
+                        Text(
+                            text = "Port Number",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    },
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 16.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = {
+                        val portNumber = port.toIntOrNull()
+                        if (portNumber == null || portNumber !in 1..65535) {
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar(
+                                    "Port must be a number between 1 and 65535"
+                                )
+                            }
+                            return@Button
+                        }
+                        if (!isValidIp(ipAddress)) {
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar(
+                                    "Please enter a valid IP address"
+                                )
+                            }
+                            return@Button
+                        }
+                        sharedViewModel.connect(ipAddress, portNumber)
+                    },
+                    enabled = connectionState !is ConnectionState.Connecting,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                ) {
+                    Text(
+                        text = if (connectionState is ConnectionState.Connecting)
+                            "Connecting..." else "Connect",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+                Button(
+                    onClick = { activity?.finish() },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary,
+                        contentColor = MaterialTheme.colorScheme.onSecondary
+                    )
+                ) {
+                    Text(
+                        text = "Exit",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun isValidIp(ip: String): Boolean {
+    val parts = ip.trim().split(".")
+    if (parts.size != 4) return false
+    return parts.all { part ->
+        val num = part.toIntOrNull() ?: return false
+        num in 0..255
+    }
+}
+
+private fun getLocalIpAddress(): String? {
+    return try {
+        NetworkInterface.getNetworkInterfaces()
+            .asSequence()
+            .filter { !it.isLoopback && it.isUp }
+            .flatMap { it.inetAddresses.asSequence() }
+            .firstOrNull { address ->
+                val host = address.hostAddress ?: return@firstOrNull false
+                !address.isLoopbackAddress &&
+                        !host.contains(':') &&           // skip IPv6
+                        !host.startsWith("10.0.2.") &&   // skip emulator virtual network
+                        !host.startsWith("169.254.")      // skip link-local addresses
+            }
+            ?.hostAddress
+    } catch (e: Exception) {
+        Log.e("ConnectScreen", "Error getting local IP: ${e.message}")
+        null
+    }
+}

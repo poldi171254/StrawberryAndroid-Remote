@@ -31,14 +31,18 @@ enum MsgType {
     MSG_TYPE_DISCONNECT = 16;
 }
 
-enum PlayerState{
+enum PlayerState {
     PLAYER_STATUS_UNSPECIFIED = 0;
-    PLAYER_STATUS_PLAYING = 1;
+    PLAYER_STATUS_EMPTY = 1;
+    PLAYER_STATUS_IDLE = 2;
+    PLAYER_STATUS_PLAYING = 3;
+    PLAYER_STATUS_PAUSED = 4;
+    PLAYER_STATUS_ERROR = 5;
 }
 
 enum EngineState {
     ENGINE_STATE_EMPTY = 0;
-    ENGINE_STATE_IDELE = 1;
+    ENGINE_STATE_IDLE = 1;
     ENGINE_STATE_PLAYING = 2;
     ENGINE_STATE_PAUSED = 3;
 }
@@ -112,20 +116,22 @@ message RequestStop {
 message EngineStateChange {
     EngineState state = 1;
 }
+
 message Message {
     MsgType type = 1;
-    RequestSongMetadata request_song_metadata = 2;
-    ResponseSongMetadata response_song_metadata = 3;
-    RequestNextTrack request_next_track = 4;
-    RequestPreviousTrack request_previous_track = 5;
-    RequestPlay request_play = 6;
-    RequestPause request_pause = 7;
-    RequestStop request_stop = 8;
-    EngineStateChange engine_state_change = 9;
-    RequestDisconnect request_disconnect = 10;
-    ResponseNextTrack response_next_track = 11;
-    ResponsePreviousTrack response_previous_track = 12;
-    ResponsePlay response_play = 13;
-    ResponsePause response_pause = 14;
+    oneof payload {
+        RequestSongMetadata request_song_metadata = 2;
+        ResponseSongMetadata response_song_metadata = 3;
+        RequestNextTrack request_next_track = 4;
+        RequestPreviousTrack request_previous_track = 5;
+        RequestPlay request_play = 6;
+        RequestPause request_pause = 7;
+        RequestStop request_stop = 8;
+        EngineStateChange engine_state_change = 9;
+        RequestDisconnect request_disconnect = 10;
+        ResponseNextTrack response_next_track = 11;
+        ResponsePreviousTrack response_previous_track = 12;
+        ResponsePlay response_play = 13;
+        ResponsePause response_pause = 14;
+    }
 }
-
