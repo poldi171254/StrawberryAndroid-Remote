@@ -36,6 +36,7 @@ androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-foundation-layout-android = { group = "androidx.compose.foundation", name = "foundation-layout-android" }
 androidx-foundation-android = { group = "androidx.compose.foundation", name = "foundation-android" }
+androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 
 # Navigation
 androidx-navigation-runtime-ktx = { group = "androidx.navigation", name = "navigation-runtime-ktx", version.ref = "navigationKtx" }

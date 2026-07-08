@@ -7,24 +7,38 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 
 private val DarkColorScheme = darkColorScheme(
-    primary = BlueButton1, // Blue for dark theme
-    secondary = GreenButton1, // Green for dark theme
-    tertiary = Pink80
+    primary = DarkPrimary,
+    onPrimary = DarkOnPrimary,
+    secondary = DarkSecondary,
+    onSecondary = DarkOnSecondary,
+    surface = DarkSurface,
+    onSurface = DarkOnSurface,
+    background = DarkSurface,
+    onBackground = DarkOnBackground,
+    surfaceVariant = DarkSurfaceVariant,
+    onSurfaceVariant = DarkOnSurfaceVariant
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = BlueButton2, // Blue for light theme
-    secondary = GreenButton2, // Green for light theme
-    tertiary = Pink40
+    primary = LightPrimary,
+    onPrimary = LightOnPrimary,
+    secondary = LightSecondary,
+    onSecondary = LightOnSecondary,
+    surface = LightSurface,
+    onSurface = LightOnSurface,
+    background = LightSurface,
+    onBackground = LightOnBackground,
+    surfaceVariant = LightSurfaceVariant,
+    onSurfaceVariant = LightOnSurfaceVariant
 )
 
 @Composable
 fun StrawberryRemoteAndroidTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
     content: @Composable () -> Unit
 ) {
+    // Dynamic color disabled — we control the palette explicitly
+    // to ensure readability over the background image
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
 
     MaterialTheme(

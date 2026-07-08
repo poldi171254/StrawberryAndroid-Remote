@@ -6,10 +6,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -42,7 +45,7 @@ import java.net.NetworkInterface
 fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel) {
     val savedConfig by sharedViewModel.savedConfig.collectAsState()
     var ipAddress by remember { mutableStateOf("") }
-    var port by remember { mutableStateOf("8888") }
+    var port by remember { mutableStateOf("5050") }
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val connectionState by sharedViewModel.connectionState.collectAsState()
@@ -55,8 +58,8 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
         } else {
             val localIp = getLocalIpAddress()
             if (localIp != null) {
-                val subnet = localIp.substringBeforeLast('.')
-                ipAddress = "$subnet."
+                val subnet = localIp.trim().substringBeforeLast('.')
+                ipAddress = "$subnet.xxx"
             }
         }
     }
@@ -75,6 +78,7 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
 
     Scaffold(
         containerColor = Color.Transparent,
+        contentWindowInsets = WindowInsets(0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = { AppBar() }
     ) { padding ->
@@ -82,7 +86,8 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(20.dp),
+                .padding(horizontal = 20.dp)
+                .windowInsetsPadding(WindowInsets.navigationBars),
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.Start
         ) {
@@ -90,6 +95,7 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.Start
             ) {
+                Spacer(modifier = Modifier.height(16.dp))
                 Text(
                     text = "Strawberry Music Player Remote",
                     style = MaterialTheme.typography.titleLarge,
@@ -206,9 +212,9 @@ private fun getLocalIpAddress(): String? {
             .firstOrNull { address ->
                 val host = address.hostAddress ?: return@firstOrNull false
                 !address.isLoopbackAddress &&
-                        !host.contains(':') &&           // skip IPv6
-                        !host.startsWith("10.0.2.") &&   // skip emulator virtual network
-                        !host.startsWith("169.254.")      // skip link-local addresses
+                        !host.contains(':') &&
+                        !host.startsWith("10.0.2.") &&
+                        !host.startsWith("169.254.")
             }
             ?.hostAddress
     } catch (e: Exception) {

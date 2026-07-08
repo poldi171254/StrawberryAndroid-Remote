@@ -22,8 +22,8 @@ android {
         applicationId = "com.zudiewiener.strawberryremote"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 8
+        versionName = "1.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -48,6 +48,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            ndk {
+                debugSymbolLevel = "FULL"
+            }
         }
         debug {
             isMinifyEnabled = false
@@ -83,6 +86,7 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.foundation.layout.android)
     implementation(libs.androidx.foundation.android)
+    implementation(libs.androidx.material.icons.extended)
 
     // Navigation
     implementation(libs.androidx.navigation.runtime.ktx)
