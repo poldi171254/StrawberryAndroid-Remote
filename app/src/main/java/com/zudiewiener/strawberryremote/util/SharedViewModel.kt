@@ -7,12 +7,13 @@ import androidx.lifecycle.viewModelScope
 import com.zudiewiener.strawberryremote.data.ConnectionConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import nw.remote.EngineState
 import nw.remote.Message
 import nw.remote.MsgType
 import nw.remote.PlayerState
@@ -45,7 +46,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     private val configFile = File(application.filesDir, "connection.cfg")
 
     private var _socket: Socket? = null
-    private var pollingJob: Job? = null
+    private var readerJob: Job? = null
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -116,7 +117,8 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                 _socket = result
                 _connectionState.value = ConnectionState.Connected
                 saveConfig(ip, port)
-                startPolling()
+                startReader()
+                requestSongInfo()
             } else {
                 _connectionState.value = ConnectionState.Error("Failed to connect to $ip:$port")
             }
@@ -124,7 +126,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun disconnect() {
-        stopPolling()
+        stopReader()
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 _socket?.close()
@@ -137,23 +139,33 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // --- Polling ---
+    // --- Reader loop ---
+    // One long-lived coroutine owns ALL reads from the socket. Every incoming
+    // message - replies and unsolicited server pushes alike - arrives here and
+    // is dispatched through processResponse(). Nothing else may read the stream.
 
-    private fun startPolling() {
-        stopPolling()
-        pollingJob = viewModelScope.launch(Dispatchers.IO) {
-            while (true) {
-                delay(60_000L)
-                if (_connectionState.value !is ConnectionState.Connected) break
-                Log.d("SharedViewModel", "Polling server for song info")
-                requestSongInfo()
+    private fun startReader() {
+        stopReader()
+        readerJob = viewModelScope.launch(Dispatchers.IO) {
+            val socket = _socket ?: return@launch
+            try {
+                val inputStream = socket.getInputStream()
+                while (isActive) {
+                    val msg = readMessage(inputStream) ?: break
+                    processResponse(msg)
+                }
+            } catch (e: Exception) {
+                Log.e("SharedViewModel", "Reader stopped: ${e.message}")
+            }
+            if (isActive) {
+                _connectionState.value = ConnectionState.Disconnected
             }
         }
     }
 
-    private fun stopPolling() {
-        pollingJob?.cancel()
-        pollingJob = null
+    private fun stopReader() {
+        readerJob?.cancel()
+        readerJob = null
     }
 
     fun requestSongInfo() {
@@ -167,6 +179,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // --- Messaging ---
+    // Sends are write-only. Replies come back through the reader loop.
 
     fun sendMessage(message: Message) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -186,23 +199,12 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                 lengthHeader[3] = (payload.size and 0xFF).toByte()
 
                 val out = socket.getOutputStream()
-                out.write(lengthHeader)
-                out.write(payload)
-                out.flush()
+                synchronized(socket) {
+                    out.write(lengthHeader)
+                    out.write(payload)
+                    out.flush()
+                }
                 Log.d("SharedViewModel", "Message sent: ${message.type}, ${payload.size} bytes")
-
-                if (message.type == MsgType.MSG_TYPE_REQUEST_PAUSE) {
-                    _playerStatus.value = "Paused"
-                    return@launch
-                }
-
-                val response = readResponse(socket.getInputStream())
-                if (response != null) {
-                    processResponse(response)
-                } else {
-                    _connectionState.value = ConnectionState.Error("Empty response from server")
-                }
-
             } catch (e: Exception) {
                 Log.e("SharedViewModel", "Error sending message: ${e.message}")
                 _connectionState.value = ConnectionState.Error(e.message ?: "Unknown error")
@@ -212,7 +214,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
 
     // --- Private helpers ---
 
-    private fun readResponse(inputStream: InputStream): Message? {
+    private fun readMessage(inputStream: InputStream): Message? {
         return try {
             val lengthBytes = ByteArray(4)
             var totalRead = 0
@@ -235,7 +237,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
             }
             Message.parseFrom(messageBytes)
         } catch (e: Exception) {
-            Log.e("SharedViewModel", "Error reading response: ${e.message}")
+            Log.e("SharedViewModel", "Error reading message: ${e.message}")
             null
         }
     }
@@ -259,13 +261,27 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                     else -> "Paused"
                 }
             }
+            MsgType.MSG_TYPE_ENGINE_STATE_CHANGE -> {
+                when (response.engineStateChange.state) {
+                    EngineState.ENGINE_STATE_PLAYING -> {
+                        _playerStatus.value = "Playing"
+                        requestSongInfo()
+                    }
+                    EngineState.ENGINE_STATE_PAUSED -> {
+                        _playerStatus.value = "Paused"
+                    }
+                    else -> {
+                        _playerStatus.value = "Stopped"
+                    }
+                }
+            }
             else -> Log.d("SharedViewModel", "Unhandled response type: ${response.type}")
         }
     }
 
     override fun onCleared() {
         super.onCleared()
-        stopPolling()
+        stopReader()
         try {
             _socket?.close()
         } catch (e: Exception) {
