@@ -6,6 +6,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.zudiewiener.strawberryremote.data.ConnectionConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -14,6 +16,7 @@ import kotlinx.coroutines.withContext
 import nw.remote.Message
 import nw.remote.MsgType
 import nw.remote.PlayerState
+import nw.remote.RequestSongMetadata
 import java.io.File
 import java.io.InputStream
 import java.net.InetSocketAddress
@@ -42,6 +45,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     private val configFile = File(application.filesDir, "connection.cfg")
 
     private var _socket: Socket? = null
+    private var pollingJob: Job? = null
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -111,7 +115,8 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
             if (result != null) {
                 _socket = result
                 _connectionState.value = ConnectionState.Connected
-                saveConfig(ip, port) // Only save on successful connection
+                saveConfig(ip, port)
+                startPolling()
             } else {
                 _connectionState.value = ConnectionState.Error("Failed to connect to $ip:$port")
             }
@@ -119,6 +124,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun disconnect() {
+        stopPolling()
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 _socket?.close()
@@ -129,6 +135,35 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                 _connectionState.value = ConnectionState.Disconnected
             }
         }
+    }
+
+    // --- Polling ---
+
+    private fun startPolling() {
+        stopPolling()
+        pollingJob = viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                delay(60_000L)
+                if (_connectionState.value !is ConnectionState.Connected) break
+                Log.d("SharedViewModel", "Polling server for song info")
+                requestSongInfo()
+            }
+        }
+    }
+
+    private fun stopPolling() {
+        pollingJob?.cancel()
+        pollingJob = null
+    }
+
+    fun requestSongInfo() {
+        val request = Message.newBuilder()
+            .setType(MsgType.MSG_TYPE_REQUEST_SONG_INFO)
+            .setRequestSongMetadata(
+                RequestSongMetadata.newBuilder().setSend(true).build()
+            )
+            .build()
+        sendMessage(request)
     }
 
     // --- Messaging ---
@@ -230,6 +265,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
+        stopPolling()
         try {
             _socket?.close()
         } catch (e: Exception) {

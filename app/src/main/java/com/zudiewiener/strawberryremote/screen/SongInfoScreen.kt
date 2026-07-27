@@ -42,6 +42,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
 import com.zudiewiener.strawberryremote.util.ConnectionState
 import com.zudiewiener.strawberryremote.util.SharedViewModel
@@ -51,7 +54,6 @@ import nw.remote.RequestNextTrack
 import nw.remote.RequestPause
 import nw.remote.RequestPlay
 import nw.remote.RequestPreviousTrack
-import nw.remote.RequestSongMetadata
 
 @Composable
 fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewModel) {
@@ -59,7 +61,9 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
     val playerStatus by sharedViewModel.playerStatus.collectAsState()
     val connectionState by sharedViewModel.connectionState.collectAsState()
     val activity = LocalActivity.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
+    // Navigate back to connect screen if connection is lost
     LaunchedEffect(connectionState) {
         if (connectionState is ConnectionState.Error ||
             connectionState is ConnectionState.Disconnected) {
@@ -69,18 +73,22 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
         }
     }
 
+    // Request initial song info on first load
     LaunchedEffect(Unit) {
-        val request = Message.newBuilder()
-            .setType(MsgType.MSG_TYPE_REQUEST_SONG_INFO)
-            .setRequestSongMetadata(
-                RequestSongMetadata.newBuilder().setSend(true).build()
-            )
-            .build()
-        sharedViewModel.sendMessage(request)
+        sharedViewModel.requestSongInfo()
     }
 
-    DisposableEffect(Unit) {
+    // Lifecycle observer — requests fresh song info on resume from sleep/background
+    // Also handles disconnect when leaving the screen
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                sharedViewModel.requestSongInfo()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
             sharedViewModel.disconnect()
         }
     }

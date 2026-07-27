@@ -1,5 +1,7 @@
 package com.zudiewiener.strawberryremote.screen
 
+import android.content.Context
+import android.net.ConnectivityManager
 import android.util.Log
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.Arrangement
@@ -33,19 +35,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.zudiewiener.strawberryremote.util.ConnectionState
 import com.zudiewiener.strawberryremote.util.SharedViewModel
 import kotlinx.coroutines.launch
-import java.net.NetworkInterface
+import java.net.Inet4Address
 
 @Composable
 fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel) {
+    val context = LocalContext.current
     val savedConfig by sharedViewModel.savedConfig.collectAsState()
     var ipAddress by remember { mutableStateOf("") }
-    var port by remember { mutableStateOf("5050") }
+    var port by remember { mutableStateOf("8888") }
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val connectionState by sharedViewModel.connectionState.collectAsState()
@@ -56,10 +60,13 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
             ipAddress = savedConfig!!.ip
             port = savedConfig!!.port.toString()
         } else {
-            val localIp = getLocalIpAddress()
+            val localIp = getLocalIpAddress(context)
+            Log.d("ConnectScreen", "Local IP detected: $localIp")
             if (localIp != null) {
                 val subnet = localIp.trim().substringBeforeLast('.')
                 ipAddress = "$subnet.xxx"
+            } else {
+                ipAddress = "192.168.1.xxx" // fallback if no network detected
             }
         }
     }
@@ -147,10 +154,10 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
                 Button(
                     onClick = {
                         val portNumber = port.toIntOrNull()
-                        if (portNumber == null || portNumber !in 1..65535) {
+                        if (portNumber == null || portNumber !in 8888..65535) {
                             coroutineScope.launch {
                                 snackbarHostState.showSnackbar(
-                                    "Port must be a number between 1 and 65535"
+                                    "Port must be a number between 8888 and 65535"
                                 )
                             }
                             return@Button
@@ -203,19 +210,20 @@ private fun isValidIp(ip: String): Boolean {
     }
 }
 
-private fun getLocalIpAddress(): String? {
+private fun getLocalIpAddress(context: Context): String? {
     return try {
-        NetworkInterface.getNetworkInterfaces()
-            .asSequence()
-            .filter { !it.isLoopback && it.isUp }
-            .flatMap { it.inetAddresses.asSequence() }
-            .firstOrNull { address ->
-                val host = address.hostAddress ?: return@firstOrNull false
-                !address.isLoopbackAddress &&
-                        !host.contains(':') &&
-                        !host.startsWith("10.0.2.") &&
-                        !host.startsWith("169.254.")
-            }
+        val connectivityManager = context.getSystemService(
+            Context.CONNECTIVITY_SERVICE
+        ) as ConnectivityManager
+
+        val network = connectivityManager.activeNetwork ?: return null
+        val linkProperties = connectivityManager.getLinkProperties(network)
+            ?: return null
+
+        linkProperties.linkAddresses
+            .map { it.address }
+            .filterIsInstance<Inet4Address>()
+            .firstOrNull { !it.isLoopbackAddress }
             ?.hostAddress
     } catch (e: Exception) {
         Log.e("ConnectScreen", "Error getting local IP: ${e.message}")
