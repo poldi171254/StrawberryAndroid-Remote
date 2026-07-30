@@ -73,7 +73,7 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
 
     LaunchedEffect(connectionState) {
         when (val state = connectionState) {
-            is ConnectionState.Connected -> {
+            is ConnectionState.Ready -> {
                 navController.navigate("songInfo")
             }
             is ConnectionState.Error -> {

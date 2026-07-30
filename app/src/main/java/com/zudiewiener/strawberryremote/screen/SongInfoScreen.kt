@@ -22,18 +22,26 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,28 +62,51 @@ import nw.remote.RequestNextTrack
 import nw.remote.RequestPause
 import nw.remote.RequestPlay
 import nw.remote.RequestPreviousTrack
+import android.util.Log
 
 @Composable
 fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewModel) {
     val songInfo by sharedViewModel.songInfo.collectAsState()
+    val remainingTime by sharedViewModel.remainingTime.collectAsState()
     val playerStatus by sharedViewModel.playerStatus.collectAsState()
     val connectionState by sharedViewModel.connectionState.collectAsState()
+    val serverShutdown by sharedViewModel.serverShutdown.collectAsState()
     val activity = LocalActivity.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    // Navigate back to connect screen if connection is lost
+    // Message for the modal shutdown dialog; null means no dialog.
+    var shutdownMessage by remember { mutableStateOf<String?>(null) }
+
+    // React to connection loss.
+    //  - Strawberry closed on the desktop: modal dialog, OK exits the app,
+    //    since there is nothing left to reconnect to.
+    //  - Anything else (rejection, network loss): brief message, then back to
+    //    the connect screen so the user can try again.
     LaunchedEffect(connectionState) {
-        if (connectionState is ConnectionState.Error ||
-            connectionState is ConnectionState.Disconnected) {
-            navController.navigate("connect") {
-                popUpTo("connect") { inclusive = true }
+        when (val state = connectionState) {
+            is ConnectionState.Error -> {
+                Log.d("SongInfoScreen", "Error: ${state.message}, serverShutdown=$serverShutdown")
+                if (serverShutdown) {
+                    shutdownMessage = state.message
+                } else {
+                    snackbarHostState.showSnackbar(
+                        message = state.message,
+                        duration = SnackbarDuration.Short
+                    )
+                    navController.navigate("connect") {
+                        popUpTo("connect") { inclusive = true }
+                    }
+                }
             }
+            is ConnectionState.Disconnected -> {
+                Log.d("SongInfoScreen", "Disconnected state")
+                navController.navigate("connect") {
+                    popUpTo("connect") { inclusive = true }
+                }
+            }
+            else -> Unit
         }
-    }
-
-    // Request initial song info on first load
-    LaunchedEffect(Unit) {
-        sharedViewModel.requestSongInfo()
     }
 
     // Lifecycle observer — requests fresh song info on resume from sleep/background
@@ -96,6 +127,7 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
     Scaffold(
         containerColor = Color.Transparent,
         contentWindowInsets = WindowInsets(0),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = { AppBar() }
     ) { padding ->
         Column(
@@ -127,6 +159,8 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
                 SongInfoField(label = "Play Count", value = songInfo.playCount)
                 Spacer(modifier = Modifier.height(12.dp))
                 SongInfoField(label = "Length", value = songInfo.songLength)
+                Spacer(modifier = Modifier.height(12.dp))
+                SongInfoField(label = "Remaining", value = remainingTime)
             }
 
             // Player status
@@ -244,6 +278,21 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
                 )
             }
         }
+    }
+
+    // Modal dialog shown only when Strawberry itself has shut down.
+    // Not dismissable by back-press or tapping outside: OK closes the app.
+    shutdownMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("Disconnected") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = { activity?.finish() }) {
+                    Text("OK")
+                }
+            }
+        )
     }
 }
 
