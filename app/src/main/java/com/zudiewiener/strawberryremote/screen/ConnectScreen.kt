@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -24,6 +26,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -53,7 +56,9 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val connectionState by sharedViewModel.connectionState.collectAsState()
+    val fatalConnectionError by sharedViewModel.fatalConnectionError.collectAsState()
     val activity = LocalActivity.current
+    var connectionErrorMessage by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(savedConfig) {
         if (savedConfig != null) {
@@ -77,7 +82,14 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
                 navController.navigate("songInfo")
             }
             is ConnectionState.Error -> {
-                snackbarHostState.showSnackbar(state.message)
+                // Fatal errors (e.g. incompatible server version) get their
+                // own modal below. Everything else - wrong IP, refused
+                // connection, timeout - is retryable, so it also gets a
+                // visible modal instead of an easy-to-miss snackbar, but one
+                // that just dismisses rather than exiting the app.
+                if (fatalConnectionError == null) {
+                    connectionErrorMessage = state.message
+                }
             }
             else -> Unit
         }
@@ -173,9 +185,10 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
                         sharedViewModel.connect(ipAddress, portNumber)
                     },
                     enabled = connectionState !is ConnectionState.Connecting,
+                    shape = CircleShape,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
+                        containerColor = MaterialTheme.colorScheme.secondary,
+                        contentColor = MaterialTheme.colorScheme.onSecondary
                     )
                 ) {
                     Text(
@@ -186,9 +199,10 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
                 }
                 Button(
                     onClick = { activity?.finish() },
+                    shape = CircleShape,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondary,
-                        contentColor = MaterialTheme.colorScheme.onSecondary
+                        containerColor = MaterialTheme.colorScheme.outline,
+                        contentColor = MaterialTheme.colorScheme.onSurface
                     )
                 ) {
                     Text(
@@ -198,6 +212,37 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
                 }
             }
         }
+    }
+
+    // Modal dialog for unrecoverable connection errors (e.g. incompatible
+    // server version). Not dismissable by back-press or tapping outside: OK
+    // closes the app, since retrying here wouldn't help.
+    fatalConnectionError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("Can't Connect") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = { activity?.finish() }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+
+    // Modal dialog for an ordinary (retryable) connection failure - dismisses
+    // back to this screen so the user can correct the IP/port and try again.
+    connectionErrorMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { connectionErrorMessage = null },
+            title = { Text("Connection Failed") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = { connectionErrorMessage = null }) {
+                    Text("OK")
+                }
+            }
+        )
     }
 }
 

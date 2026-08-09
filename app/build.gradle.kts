@@ -16,14 +16,14 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.zudiewiener.strawberryremote"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.zudiewiener.strawberryremote"
         minSdk = 29
         targetSdk = 36
-        versionCode = 13
-        versionName = "1.0.3-A"
+        versionCode = 19
+        versionName = "1.0.1.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -100,7 +100,6 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
-    androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
