@@ -6,6 +6,8 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.zudiewiener.strawberryremote.data.ConnectionConfig
+import com.zudiewiener.strawberryremote.net.ConnectionState
+import com.zudiewiener.strawberryremote.net.StrawberryConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -14,7 +16,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import nw.remote.EngineState
 import nw.remote.Message
 import nw.remote.MsgType
@@ -29,24 +30,7 @@ import nw.remote.RequestRemoveSongFromPlaylist
 import nw.remote.RequestSongMetadata
 import nw.remote.ResponseSongMetadata
 import java.io.File
-import java.io.InputStream
-import java.net.InetSocketAddress
-import java.net.Socket
-import java.net.SocketTimeoutException
 import kotlin.time.Duration.Companion.seconds
-
-sealed class ConnectionState {
-    object Disconnected : ConnectionState()
-    object Connecting : ConnectionState()
-
-    /** TCP connection established; handshake sent, waiting for the server to accept. */
-    object Connected : ConnectionState()
-
-    /** Handshake accepted by the server - the remote is usable. */
-    object Ready : ConnectionState()
-
-    data class Error(val message: String) : ConnectionState()
-}
 
 /** One playlist tab, mirroring the Qt client's playlist_names_/playlist_ids_ pair. */
 data class PlaylistTab(
@@ -78,6 +62,14 @@ data class QueueRowData(
     val rowIndex: Int = 0
 )
 
+/**
+ * Owns all message-meaning business logic (what a RESPONSE_PLAYLIST_SONGS
+ * means, how the queue/previous/current/upcoming rows are tracked, protocol
+ * version validation, etc.) and every UI-facing StateFlow each screen
+ * collects. Raw socket handling - connect/disconnect, message framing, the
+ * reader loop, silent reconnection - is delegated entirely to
+ * StrawberryConnection, which this class knows nothing about the internals of.
+ */
 class SharedViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
@@ -89,12 +81,10 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
 
     private val configFile = File(application.filesDir, "connection.cfg")
 
-    private var _socket: Socket? = null
-    private var readerJob: Job? = null
-    private var countdownJob: Job? = null
+    private val connection = StrawberryConnection(viewModelScope)
 
-    private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
-    val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
+    /** Re-exported directly from StrawberryConnection - this class only ever reads it. */
+    val connectionState: StateFlow<ConnectionState> = connection.connectionState
 
     /**
      * True only when the server told us it is shutting down (Strawberry was
@@ -126,6 +116,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     val remainingTime: StateFlow<String> = _remainingTime.asStateFlow()
 
     private var remainingSeconds = 0
+    private var countdownJob: Job? = null
 
     private val _savedConfig = MutableStateFlow<ConnectionConfig?>(null)
     val savedConfig: StateFlow<ConnectionConfig?> = _savedConfig.asStateFlow()
@@ -178,6 +169,26 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         loadConfig()
+
+        // Every parsed incoming message, from the initial connection through
+        // any number of silent reconnects, flows through here.
+        viewModelScope.launch {
+            connection.incomingMessages.collect { message ->
+                processResponse(message)
+            }
+        }
+
+        // The handshake is business logic (needs a specific client-name
+        // payload) so it's sent from here, triggered whenever the connection
+        // reaches a fresh TCP-connected-but-not-yet-handshaked state - true
+        // for both a brand new connect() and every successful silent reconnect.
+        viewModelScope.launch {
+            connection.connectionState.collect { state ->
+                if (state is ConnectionState.Connected) {
+                    sendHandshake()
+                }
+            }
+        }
     }
 
     // --- Config ---
@@ -214,48 +225,14 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     // --- Connection ---
 
     fun connect(ip: String, port: Int) {
-        viewModelScope.launch {
-            // Fresh session: clear any shutdown flag left over from a previous one.
-            _serverShutdown.value = false
-            _connectionState.value = ConnectionState.Connecting
-            val result = withContext(Dispatchers.IO) {
-                try {
-                    val socket = Socket()
-                    socket.connect(InetSocketAddress(ip, port), 2000)
-                    socket
-                } catch (e: SocketTimeoutException) {
-                    Log.e("SharedViewModel", "Connection timed out: ${e.message}")
-                    null
-                } catch (e: Exception) {
-                    Log.e("SharedViewModel", "Connection failed: ${e.message}")
-                    null
-                }
-            }
-            if (result != null) {
-                _socket = result
-                _connectionState.value = ConnectionState.Connected
-                saveConfig(ip, port)
-                startReader()
-                sendHandshake()
-            } else {
-                _connectionState.value = ConnectionState.Error("Failed to connect to $ip:$port")
-            }
-        }
+        _serverShutdown.value = false
+        saveConfig(ip, port)
+        connection.connect(ip, port)
     }
 
     fun disconnect() {
-        stopReader()
         stopCountdown()
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                _socket?.close()
-            } catch (e: Exception) {
-                Log.e("SharedViewModel", "Error closing socket: ${e.message}")
-            } finally {
-                _socket = null
-                _connectionState.value = ConnectionState.Disconnected
-            }
-        }
+        connection.disconnect()
     }
 
     /**
@@ -272,38 +249,6 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
             )
             .build()
         sendMessage(request)
-    }
-
-    // --- Reader loop ---
-    // One long-lived coroutine owns ALL reads from the socket. Every incoming
-    // message - replies and unsolicited server pushes alike - arrives here and
-    // is dispatched through processResponse(). Nothing else may read the stream.
-
-    private fun startReader() {
-        stopReader()
-        readerJob = viewModelScope.launch(Dispatchers.IO) {
-            val socket = _socket ?: return@launch
-            try {
-                val inputStream = socket.getInputStream()
-                while (isActive) {
-                    val msg = readMessage(inputStream) ?: break
-                    Log.d("SharedViewModel", "Received: ${msg.type}")
-                    processResponse(msg)
-                }
-            } catch (e: Exception) {
-                Log.e("SharedViewModel", "Reader stopped: ${e.message}")
-            }
-            // Don't overwrite an Error state (e.g. a server rejection) with a
-            // generic Disconnected when the socket subsequently closes.
-            if (isActive && _connectionState.value !is ConnectionState.Error) {
-                _connectionState.value = ConnectionState.Disconnected
-            }
-        }
-    }
-
-    private fun stopReader() {
-        readerJob?.cancel()
-        readerJob = null
     }
 
     // --- Remaining-time countdown ---
@@ -451,81 +396,12 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // --- Messaging ---
-    // Sends are write-only. Replies come back through the reader loop.
-    // The protocol version is stamped centrally here so no builder site can
-    // forget it.
+    // Thin pass-through to StrawberryConnection - kept as a member so every
+    // existing call site (requestX methods above) doesn't need to reach
+    // through a second object reference.
 
     fun sendMessage(message: Message) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val socket = _socket ?: run {
-                    // No active socket - most commonly a stray send that lost
-                    // a race against an intentional disconnect() (e.g. a
-                    // measurement effect re-firing during a screen's exit
-                    // transition). Not a real failure worth surfacing to the
-                    // user: connectionState already reflects "not connected"
-                    // through whatever caused the socket to go away.
-                    Log.w("SharedViewModel", "sendMessage called with no active socket - message dropped")
-                    return@launch
-                }
-
-                // Don't keep sending into a connection the server has rejected or dropped.
-                if (_connectionState.value is ConnectionState.Error) return@launch
-
-                val stamped = message.toBuilder()
-                    .setVersion(ProtocolConstants.PROTOCOL_VERSION)
-                    .build()
-                val payload = stamped.toByteArray()
-
-                // 4-byte big-endian length prefix to match server framing
-                val lengthHeader = ByteArray(4)
-                lengthHeader[0] = (payload.size shr 24 and 0xFF).toByte()
-                lengthHeader[1] = (payload.size shr 16 and 0xFF).toByte()
-                lengthHeader[2] = (payload.size shr 8 and 0xFF).toByte()
-                lengthHeader[3] = (payload.size and 0xFF).toByte()
-
-                val out = socket.getOutputStream()
-                synchronized(socket) {
-                    out.write(lengthHeader)
-                    out.write(payload)
-                    out.flush()
-                }
-                Log.d("SharedViewModel", "Message sent: ${stamped.type}, ${payload.size} bytes")
-            } catch (e: Exception) {
-                Log.e("SharedViewModel", "Error sending message: ${e.message}")
-                _connectionState.value = ConnectionState.Error(e.message ?: "Unknown error")
-            }
-        }
-    }
-
-    // --- Private helpers ---
-
-    private fun readMessage(inputStream: InputStream): Message? {
-        return try {
-            val lengthBytes = ByteArray(4)
-            var totalRead = 0
-            while (totalRead < 4) {
-                val read = inputStream.read(lengthBytes, totalRead, 4 - totalRead)
-                if (read == -1) return null
-                totalRead += read
-            }
-            val messageLength = ((lengthBytes[0].toInt() and 0xFF) shl 24) or
-                    ((lengthBytes[1].toInt() and 0xFF) shl 16) or
-                    ((lengthBytes[2].toInt() and 0xFF) shl 8) or
-                    (lengthBytes[3].toInt() and 0xFF)
-
-            val messageBytes = ByteArray(messageLength)
-            totalRead = 0
-            while (totalRead < messageLength) {
-                val read = inputStream.read(messageBytes, totalRead, messageLength - totalRead)
-                if (read == -1) return null
-                totalRead += read
-            }
-            Message.parseFrom(messageBytes)
-        } catch (e: Exception) {
-            Log.e("SharedViewModel", "Error reading message: ${e.message}")
-            null
-        }
+        connection.sendMessage(message)
     }
 
     /** Shared by MSG_TYPE_REPLY_SONG_INFO and the songInfo field inside MSG_TYPE_RESPONSE_INITIAL_INFO. */
@@ -580,20 +456,19 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                         )
                         _fatalConnectionError.value =
                             "This version of Strawberry's Network Remote is too old for this app. Please update Strawberry."
-                        disconnect()
+                        connection.disconnect()
                         return
                     }
                     Log.d(
                         "SharedViewModel",
                         "Handshake accepted, server protocol version ${response.version}"
                     )
-                    _connectionState.value = ConnectionState.Ready
+                    connection.markReady()
                     // The one and only initial request, sent once the server has
                     // accepted us - bundles song info, playlists, and engine state.
                     requestInitialInfo()
                 } else {
-                    _connectionState.value =
-                        ConnectionState.Error("Server refused the connection")
+                    connection.setError("Server refused the connection")
                 }
             }
             MsgType.MSG_TYPE_REPLY_SONG_INFO -> {
@@ -703,6 +578,8 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                 when (response.engineStateChange.state) {
                     EngineState.ENGINE_STATE_PLAYING -> {
                         _playerStatus.value = "Playing"
+                        // Requesting song info here restarts the countdown with
+                        // a fresh position, which is also how a desktop seek resyncs.
                         requestSongInfo()
                         // The current/upcoming rows may have shifted; refresh
                         // the queue too, but only if we're looking at the
@@ -739,7 +616,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                 if (reason == ReasonDisconnect.REASON_DISCONNECT_SERVER_SHUTDOWN) {
                     _serverShutdown.value = true
                 }
-                _connectionState.value = ConnectionState.Error(text)
+                connection.setError(text)
             }
             else -> Log.d("SharedViewModel", "Unhandled response type: ${response.type}")
         }
@@ -747,13 +624,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
-        stopReader()
         stopCountdown()
-        try {
-            _socket?.close()
-        } catch (e: Exception) {
-            Log.e("SharedViewModel", "Error in onCleared: ${e.message}")
-        }
-        _socket = null
+        connection.shutdown()
     }
 }

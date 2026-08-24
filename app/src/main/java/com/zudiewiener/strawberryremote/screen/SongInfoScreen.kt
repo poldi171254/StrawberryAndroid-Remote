@@ -59,6 +59,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -71,7 +72,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
 import com.zudiewiener.strawberryremote.util.ColumnInfo
-import com.zudiewiener.strawberryremote.util.ConnectionState
+import com.zudiewiener.strawberryremote.net.ConnectionState
 import com.zudiewiener.strawberryremote.util.PlaylistTab
 import com.zudiewiener.strawberryremote.util.QueueRowData
 import com.zudiewiener.strawberryremote.util.SharedViewModel

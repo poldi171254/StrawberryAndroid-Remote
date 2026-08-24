@@ -42,7 +42,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
-import com.zudiewiener.strawberryremote.util.ConnectionState
+import com.zudiewiener.strawberryremote.net.ConnectionState
 import com.zudiewiener.strawberryremote.util.SharedViewModel
 import kotlinx.coroutines.launch
 import java.net.Inet4Address
