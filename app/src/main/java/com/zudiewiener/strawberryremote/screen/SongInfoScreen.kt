@@ -1,3 +1,22 @@
+/*
+ * Client for the Strawberry Music Player
+ * Copyright 2026, Leopold List <leo@zudiewiener.com>
+ *
+ * Client for the Strawberry Music Player is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Client for the Strawberry Music Player is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Client for the Strawberry Music Player.
+ * If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
 package com.zudiewiener.strawberryremote.screen
 
 import androidx.activity.compose.LocalActivity
@@ -55,6 +74,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -62,20 +82,27 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
-import com.zudiewiener.strawberryremote.util.ColumnInfo
+import com.zudiewiener.strawberryremote.logic.AuthController
+import com.zudiewiener.strawberryremote.logic.ColumnInfo
 import com.zudiewiener.strawberryremote.net.ConnectionState
-import com.zudiewiener.strawberryremote.util.PlaylistTab
-import com.zudiewiener.strawberryremote.util.QueueRowData
+import com.zudiewiener.strawberryremote.logic.PlaylistTab
+import com.zudiewiener.strawberryremote.logic.QueueRowData
 import com.zudiewiener.strawberryremote.util.SharedViewModel
+import kotlinx.coroutines.launch
 import nw.remote.Message
 import nw.remote.MsgType
 import nw.remote.RequestNextTrack
@@ -84,12 +111,13 @@ import nw.remote.RequestPlay
 import nw.remote.RequestPreviousTrack
 import android.util.Log
 
-// Fixed row/column sizing keeps the screen-space calculation pure arithmetic
-// rather than needing a fragile multi-pass content measurement.
+// Row height stays fixed (screen-space math for row count is pure
+// arithmetic); column width is now content-driven - see computeColumnWidths.
 private val ROW_HEIGHT = 48.dp
 private val HEADER_ROW_HEIGHT = 36.dp
-private val COLUMN_WIDTH = 130.dp
-private val MIN_COLUMN_WIDTH = 80.dp
+private val MIN_COLUMN_WIDTH = 40.dp
+private val MAX_COLUMN_WIDTH = 240.dp
+private val COLUMN_HORIZONTAL_PADDING = 8.dp
 private const val MAX_PREVIOUS_ROWS_SHOWN = 2
 
 @Composable
@@ -107,10 +135,13 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
     val currentRow by sharedViewModel.currentRow.collectAsState()
     val upcomingRows by sharedViewModel.upcomingRows.collectAsState()
     val actionError by sharedViewModel.actionError.collectAsState()
+    val mutablePlaylistsEnabled by sharedViewModel.mutablePlaylistsEnabled.collectAsState()
+    val tokenPrompt by sharedViewModel.tokenPrompt.collectAsState()
 
     val activity = LocalActivity.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
 
     // Message for the modal shutdown dialog; null means no dialog.
     var shutdownMessage by remember { mutableStateOf<String?>(null) }
@@ -121,6 +152,10 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
     //  - Anything else (rejection, network loss): brief message, then back to
     //    the connect screen so the user can try again.
     LaunchedEffect(connectionState) {
+        // A too-many-failed-attempts lockout is handled entirely by the
+        // global TokenPromptDialog (MainActivity) - skip the ordinary
+        // error/disconnect handling below so they don't stack.
+        if (tokenPrompt is AuthController.TokenPromptState.LockedOut) return@LaunchedEffect
         when (val state = connectionState) {
             is ConnectionState.Error -> {
                 Log.d("SongInfoScreen", "Error: ${state.message}, serverShutdown=$serverShutdown")
@@ -209,14 +244,10 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
                 )
                 val upcomingCountWanted = (totalRows - previousToShow - 1).coerceAtLeast(0)
 
-                // Spreads columns evenly across the available width when few
-                // enough to fit; falls back to a fixed minimum (triggering
-                // horizontal scroll) once there are too many to fit evenly.
-                val columnWidth = if (columns.isNotEmpty()) {
-                    maxOf(this.maxWidth / columns.size, MIN_COLUMN_WIDTH)
-                } else {
-                    COLUMN_WIDTH
-                }
+                // Column widths are computed inside QueueTable from actual
+                // header/content measurements (see computeColumnWidths) - it
+                // needs the raw available width, not a pre-divided guess.
+                val availableWidth = this.maxWidth
 
                 // Re-requests whenever the measured space changes (rotation,
                 // split-screen resize, different device) or the viewed
@@ -230,12 +261,22 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
 
                 QueueTable(
                     columns = columns,
-                    columnWidth = columnWidth,
+                    availableWidth = availableWidth,
                     previousRows = previousRows.takeLast(previousToShow),
                     currentRow = currentRow,
                     upcomingRows = upcomingRows,
                     playlists = playlists,
                     viewedPlaylistIndex = viewedPlaylistIndex,
+                    mutablePlaylistsEnabled = mutablePlaylistsEnabled,
+                    onMutationBlocked = {
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar(
+                                message = "Playlist changes are unavailable: enter the server's " +
+                                        "token, or ask the server to disable the token requirement.",
+                                duration = SnackbarDuration.Short
+                            )
+                        }
+                    },
                     onPlayRow = { rowIndex -> sharedViewModel.requestPlaySong(rowIndex) },
                     onAddCurrentToPlaylist = { targetId, newName ->
                         sharedViewModel.addCurrentSongToPlaylist(targetId, newName)
@@ -389,12 +430,14 @@ private fun PlaylistTabsRow(
 @Composable
 private fun QueueTable(
     columns: List<ColumnInfo>,
-    columnWidth: Dp,
+    availableWidth: Dp,
     previousRows: List<QueueRowData>,
     currentRow: QueueRowData?,
     upcomingRows: List<QueueRowData>,
     playlists: List<PlaylistTab>,
     viewedPlaylistIndex: Int,
+    mutablePlaylistsEnabled: Boolean,
+    onMutationBlocked: () -> Unit,
     onPlayRow: (Int) -> Unit,
     onAddCurrentToPlaylist: (Int, String) -> Unit,
     onRemoveRow: (Int) -> Unit
@@ -413,6 +456,37 @@ private fun QueueTable(
     // text) - no need to guess from formatted cell content.
     val columnCentered = remember(columns) { columns.map { it.isNumeric } }
 
+    // Content-based column widths: each column is sized to its widest
+    // currently-visible header/value (clamped to MIN/MAX), so a numeric
+    // column like Track or Year doesn't take the same space as Title or
+    // Album just because they share a header row. Only the rows currently
+    // loaded are measured - cheap at these row counts, and re-measures
+    // automatically as the queue scrolls/changes.
+    val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val headerStyle = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+    val bodyStyle = MaterialTheme.typography.bodyMedium
+
+    val measuredRows = remember(previousRows, currentRow, upcomingRows) {
+        buildList {
+            addAll(previousRows)
+            currentRow?.let { add(it) }
+            addAll(upcomingRows)
+        }
+    }
+
+    val columnWidths = remember(columns, measuredRows, availableWidth) {
+        computeColumnWidths(
+            columns = columns,
+            rows = measuredRows,
+            availableWidth = availableWidth,
+            textMeasurer = textMeasurer,
+            headerStyle = headerStyle,
+            bodyStyle = bodyStyle,
+            density = density
+        )
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Header row
@@ -427,8 +501,8 @@ private fun QueueTable(
                     Text(
                         text = column.name,
                         modifier = Modifier
-                            .width(columnWidth)
-                            .padding(horizontal = 8.dp),
+                            .width(columnWidths.getOrElse(index) { MIN_COLUMN_WIDTH })
+                            .padding(horizontal = COLUMN_HORIZONTAL_PADDING),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
@@ -445,7 +519,7 @@ private fun QueueTable(
                 QueueRow(
                     row = row,
                     columnCount = columns.size,
-                    columnWidth = columnWidth,
+                    columnWidths = columnWidths,
                     columnCentered = columnCentered,
                     isCurrent = false,
                     isPrevious = true,
@@ -461,7 +535,7 @@ private fun QueueTable(
                 QueueRow(
                     row = row,
                     columnCount = columns.size,
-                    columnWidth = columnWidth,
+                    columnWidths = columnWidths,
                     columnCentered = columnCentered,
                     isCurrent = true,
                     isPrevious = false,
@@ -469,7 +543,16 @@ private fun QueueTable(
                     zebraIndex = zebraIndex++,
                     scrollState = scrollState,
                     onDoubleTap = { onPlayRow(row.rowIndex) },
-                    onLongPress = { menuForRow = row.rowIndex to true }
+                    // Add/remove require a valid token when the server has
+                    // auth enabled - if the user bypassed or hasn't resolved
+                    // it yet, tell them why rather than doing nothing.
+                    onLongPress = {
+                        if (mutablePlaylistsEnabled) {
+                            menuForRow = row.rowIndex to true
+                        } else {
+                            onMutationBlocked()
+                        }
+                    }
                 )
             }
 
@@ -477,7 +560,7 @@ private fun QueueTable(
                 QueueRow(
                     row = row,
                     columnCount = columns.size,
-                    columnWidth = columnWidth,
+                    columnWidths = columnWidths,
                     columnCentered = columnCentered,
                     isCurrent = false,
                     isPrevious = false,
@@ -485,7 +568,13 @@ private fun QueueTable(
                     zebraIndex = zebraIndex++,
                     scrollState = scrollState,
                     onDoubleTap = { onPlayRow(row.rowIndex) },
-                    onLongPress = { menuForRow = row.rowIndex to false }
+                    onLongPress = {
+                        if (mutablePlaylistsEnabled) {
+                            menuForRow = row.rowIndex to false
+                        } else {
+                            onMutationBlocked()
+                        }
+                    }
                 )
             }
         }
@@ -606,7 +695,7 @@ private fun AddToPlaylistDialog(
 private fun QueueRow(
     row: QueueRowData,
     columnCount: Int,
-    columnWidth: Dp,
+    columnWidths: List<Dp>,
     columnCentered: List<Boolean>,
     isCurrent: Boolean,
     isPrevious: Boolean,
@@ -651,8 +740,8 @@ private fun QueueRow(
             Text(
                 text = value,
                 modifier = Modifier
-                    .width(columnWidth)
-                    .padding(horizontal = 8.dp),
+                    .width(columnWidths.getOrElse(col) { MIN_COLUMN_WIDTH })
+                    .padding(horizontal = COLUMN_HORIZONTAL_PADDING),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
                 textAlign = if (columnCentered.getOrElse(col) { false }) TextAlign.Center else TextAlign.Start,
@@ -661,6 +750,50 @@ private fun QueueRow(
                 color = textColor
             )
         }
+    }
+}
+
+/**
+ * Sizes each column to its widest currently-visible content (header label or
+ * any measured row's value in that column), clamped to [MIN_COLUMN_WIDTH,
+ * MAX_COLUMN_WIDTH] so one unusually long value can't dominate the whole
+ * table. If the clamped widths leave unused space (few columns, or short
+ * content, on a wide screen) that space is distributed back proportionally
+ * so the table still fills the available width rather than leaving a blank
+ * gap - a column that already needed more room gets more of the extra space
+ * than one that was already narrow.
+ */
+private fun computeColumnWidths(
+    columns: List<ColumnInfo>,
+    rows: List<QueueRowData>,
+    availableWidth: Dp,
+    textMeasurer: TextMeasurer,
+    headerStyle: TextStyle,
+    bodyStyle: TextStyle,
+    density: Density
+): List<Dp> {
+    if (columns.isEmpty()) return emptyList()
+
+    val naturalWidths = columns.mapIndexed { index, column ->
+        var maxPx = textMeasurer.measure(column.name, headerStyle).size.width
+        for (row in rows) {
+            val value = row.values.getOrElse(index) { "" }
+            if (value.isNotEmpty()) {
+                val widthPx = textMeasurer.measure(value, bodyStyle).size.width
+                if (widthPx > maxPx) maxPx = widthPx
+            }
+        }
+        with(density) { maxPx.toDp() } + (COLUMN_HORIZONTAL_PADDING * 2)
+    }
+
+    val clampedWidths = naturalWidths.map { it.coerceIn(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH) }
+    val totalClamped = clampedWidths.fold(0.dp) { acc, width -> acc + width }
+
+    return if (totalClamped < availableWidth && totalClamped > 0.dp) {
+        val extra = availableWidth - totalClamped
+        clampedWidths.map { it + extra * (it / totalClamped) }
+    } else {
+        clampedWidths
     }
 }
 

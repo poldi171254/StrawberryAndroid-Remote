@@ -1,3 +1,22 @@
+/*
+ * Client for the Strawberry Music Player
+ * Copyright 2026, Leopold List <leo@zudiewiener.com>
+ *
+ * Client for the Strawberry Music Player is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Client for the Strawberry Music Player is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Client for the Strawberry Music Player.
+ * If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
 package com.zudiewiener.strawberryremote.util
 
 import android.app.Application
@@ -6,82 +25,64 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.zudiewiener.strawberryremote.data.ConnectionConfig
+import com.zudiewiener.strawberryremote.logic.AuthController
+import com.zudiewiener.strawberryremote.logic.ColumnInfo
+import com.zudiewiener.strawberryremote.logic.PlayerStatusController
+import com.zudiewiener.strawberryremote.logic.PlaylistController
+import com.zudiewiener.strawberryremote.logic.PlaylistTab
+import com.zudiewiener.strawberryremote.logic.QueueController
+import com.zudiewiener.strawberryremote.logic.QueueRowData
 import com.zudiewiener.strawberryremote.net.ConnectionState
 import com.zudiewiener.strawberryremote.net.StrawberryConnection
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import nw.remote.EngineState
 import nw.remote.Message
 import nw.remote.MsgType
-import nw.remote.PlayerState
 import nw.remote.ReasonDisconnect
-import nw.remote.RequestAddSongToPlaylist
 import nw.remote.RequestConnect
 import nw.remote.RequestInitialInfo
-import nw.remote.RequestPlaySong
-import nw.remote.RequestPlaylistSongs
-import nw.remote.RequestRemoveSongFromPlaylist
 import nw.remote.RequestSongMetadata
-import nw.remote.ResponseSongMetadata
 import java.io.File
-import kotlin.time.Duration.Companion.seconds
-
-/** One playlist tab, mirroring the Qt client's playlist_names_/playlist_ids_ pair. */
-data class PlaylistTab(
-    val id: Int,
-    val name: String
-)
 
 /**
- * One visible column's identity. is_numeric is the server's own knowledge of
- * the underlying Playlist::Column (Track, Year, Length, PlayCount etc. are
- * numeric/measurement-like; Title, Artist, Album, Genre etc. are text) - used
- * to decide left vs. center alignment without guessing from formatted content.
- */
-data class ColumnInfo(
-    val name: String,
-    val isNumeric: Boolean = false
-)
-
-/**
- * One row of the queue view - either the current/last-played row or an
- * upcoming song. rowIndex is the absolute position within the playlist,
- * needed for RequestPlaySong / RequestRemoveSongFromPlaylist. Rows kept in
- * local previous/history do NOT get a meaningful rowIndex re-sent to the
- * server (same staleness reasoning as the Qt client): callers should only
- * offer play/remove actions on current/upcoming rows.
- */
-data class QueueRowData(
-    val values: List<String> = emptyList(),
-    val rowIndex: Int = 0
-)
-
-/**
- * Owns all message-meaning business logic (what a RESPONSE_PLAYLIST_SONGS
- * means, how the queue/previous/current/upcoming rows are tracked, protocol
- * version validation, etc.) and every UI-facing StateFlow each screen
- * collects. Raw socket handling - connect/disconnect, message framing, the
- * reader loop, silent reconnection - is delegated entirely to
- * StrawberryConnection, which this class knows nothing about the internals of.
+ * Coordinates the connection and dispatches every incoming [Message] to
+ * whichever controller(s) it concerns, but no longer holds any of the
+ * message-meaning business logic directly: playlist identity/selection lives
+ * in [PlaylistController], queue row/column content in [QueueController],
+ * player status/countdown in [PlayerStatusController], and the auth/token
+ * state machine in [AuthController]. This class owns instances of all four
+ * plus the raw [StrawberryConnection], wires them together where they need
+ * to collaborate (e.g. "auth resolved" -> "now request initial info"), and
+ * re-exposes their StateFlows for the UI to collect.
  */
 class SharedViewModel(application: Application) : AndroidViewModel(application) {
-
-    companion object {
-        // Used only until the UI's first BoxWithConstraints measurement lands
-        // and calls refreshVisibleQueue() with the real, screen-derived count.
-        private const val INITIAL_UPCOMING_COUNT = 10
-        private const val MAX_PREVIOUS_ROWS = 50
-    }
 
     private val configFile = File(application.filesDir, "connection.cfg")
 
     private val connection = StrawberryConnection(viewModelScope)
+
+    private val authController = AuthController(
+        sendMessage = { sendMessage(it) },
+        onConnectHandshakeReady = { finishConnectHandshake() }
+    )
+
+    private val queueController = QueueController(
+        sendMessage = { sendMessage(it) }
+    )
+
+    private val playlistController = PlaylistController(
+        sendMessage = { sendMessage(it) },
+        getToken = { authController.currentToken },
+        onViewedPlaylistChanged = { queueController.resetView() }
+    )
+
+    private val playerStatusController = PlayerStatusController(viewModelScope)
+
+    // --- Re-exported state ---
 
     /** Re-exported directly from StrawberryConnection - this class only ever reads it. */
     val connectionState: StateFlow<ConnectionState> = connection.connectionState
@@ -89,8 +90,8 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     /**
      * True only when the server told us it is shutting down (Strawberry was
      * closed on the desktop). Other disconnects - version rejection, network
-     * loss - leave this false, so the UI can react differently: there is
-     * nothing to reconnect to after a shutdown.
+     * loss, too-many-failed-attempts - leave this false, so the UI can react
+     * differently: there is nothing to reconnect to after a shutdown.
      */
     private val _serverShutdown = MutableStateFlow(false)
     val serverShutdown: StateFlow<Boolean> = _serverShutdown.asStateFlow()
@@ -104,67 +105,30 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     private val _fatalConnectionError = MutableStateFlow<String?>(null)
     val fatalConnectionError: StateFlow<String?> = _fatalConnectionError.asStateFlow()
 
-    private val _playerStatus = MutableStateFlow("")
-    val playerStatus: StateFlow<String> = _playerStatus.asStateFlow()
-
-    /**
-     * Seconds left in the current track, formatted as m:ss. The server sends
-     * the authoritative position with each song info reply; between replies the
-     * value is ticked down locally once per second while playing.
-     */
-    private val _remainingTime = MutableStateFlow("")
-    val remainingTime: StateFlow<String> = _remainingTime.asStateFlow()
-
-    private var remainingSeconds = 0
-    private var countdownJob: Job? = null
-
     private val _savedConfig = MutableStateFlow<ConnectionConfig?>(null)
     val savedConfig: StateFlow<ConnectionConfig?> = _savedConfig.asStateFlow()
 
-    // --- Playlists ---
+    val playerStatus: StateFlow<String> = playerStatusController.playerStatus
+    val remainingTime: StateFlow<String> = playerStatusController.remainingTime
 
-    private val _playlists = MutableStateFlow<List<PlaylistTab>>(emptyList())
-    val playlists: StateFlow<List<PlaylistTab>> = _playlists.asStateFlow()
+    val playlists: StateFlow<List<PlaylistTab>> = playlistController.playlists
+    val activePlaylistIndex: StateFlow<Int> = playlistController.activePlaylistIndex
+    val viewedPlaylistIndex: StateFlow<Int> = playlistController.viewedPlaylistIndex
+    val actionError: StateFlow<String?> = playlistController.actionError
 
-    /** Index into playlists for whichever playlist is actually producing audio. -1 if none. */
-    private val _activePlaylistIndex = MutableStateFlow(-1)
-    val activePlaylistIndex: StateFlow<Int> = _activePlaylistIndex.asStateFlow()
+    val columns: StateFlow<List<ColumnInfo>> = queueController.columns
+    val previousRows: StateFlow<List<QueueRowData>> = queueController.previousRows
+    val currentRow: StateFlow<QueueRowData?> = queueController.currentRow
+    val upcomingRows: StateFlow<List<QueueRowData>> = queueController.upcomingRows
 
-    /** Index into playlists for whichever playlist the queue view is currently showing. -1 if none. */
-    private val _viewedPlaylistIndex = MutableStateFlow(-1)
-    val viewedPlaylistIndex: StateFlow<Int> = _viewedPlaylistIndex.asStateFlow()
+    /** Null hides the token prompt entirely. See AuthController.TokenPromptState for the three visible states. */
+    val tokenPrompt: StateFlow<AuthController.TokenPromptState?> = authController.tokenPrompt
 
-    private var activePlaylistId: Int = 0
-    private var hasActivePlaylist: Boolean = false
-    private var viewedPlaylistId: Int = 0
-    private var hasViewedPlaylist: Boolean = false
-
-    // The UI is the only thing that knows the actual measured screen space,
-    // so it owns upcomingCount. This caches the last value it asked for, so
-    // internal auto-refreshes (after play/add/remove, broadcasts) can reuse
-    // it instead of guessing a flat default.
-    private var lastRequestedUpcomingCount = INITIAL_UPCOMING_COUNT
-
-    // --- Queue (column-driven, mirrors the Qt client's queueTable exactly) ---
-
-    private val _columns = MutableStateFlow<List<ColumnInfo>>(emptyList())
-    val columns: StateFlow<List<ColumnInfo>> = _columns.asStateFlow()
-
-    private val _previousRows = MutableStateFlow<List<QueueRowData>>(emptyList())
-    val previousRows: StateFlow<List<QueueRowData>> = _previousRows.asStateFlow()
-
-    private val _currentRow = MutableStateFlow<QueueRowData?>(null)
-    val currentRow: StateFlow<QueueRowData?> = _currentRow.asStateFlow()
-
-    private val _upcomingRows = MutableStateFlow<List<QueueRowData>>(emptyList())
-    val upcomingRows: StateFlow<List<QueueRowData>> = _upcomingRows.asStateFlow()
-
-    /** One-shot error surface for failed add/remove actions - UI shows as a snackbar and clears. */
-    private val _actionError = MutableStateFlow<String?>(null)
-    val actionError: StateFlow<String?> = _actionError.asStateFlow()
+    /** False disables add/remove UI (the server rejects those requests regardless; this just avoids a round trip). */
+    val mutablePlaylistsEnabled: StateFlow<Boolean> = authController.mutablePlaylistsEnabled
 
     fun consumeActionError() {
-        _actionError.value = null
+        playlistController.consumeActionError()
     }
 
     init {
@@ -178,14 +142,24 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-        // The handshake is business logic (needs a specific client-name
-        // payload) so it's sent from here, triggered whenever the connection
-        // reaches a fresh TCP-connected-but-not-yet-handshaked state - true
-        // for both a brand new connect() and every successful silent reconnect.
         viewModelScope.launch {
             connection.connectionState.collect { state ->
-                if (state is ConnectionState.Connected) {
-                    sendHandshake()
+                when (state) {
+                    // The handshake is business logic (needs a specific
+                    // client-name payload) so it's sent from here, triggered
+                    // whenever the connection reaches a fresh
+                    // TCP-connected-but-not-yet-handshaked state - true for
+                    // both a brand new connect() and every successful silent
+                    // reconnect.
+                    is ConnectionState.Connected -> sendHandshake()
+
+                    // A fresh connect (or a drop that gave up reconnecting)
+                    // starts every controller from a clean slate.
+                    is ConnectionState.Disconnected -> {
+                        authController.reset()
+                        playlistController.reset()
+                    }
+                    else -> Unit
                 }
             }
         }
@@ -231,8 +205,31 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun disconnect() {
-        stopCountdown()
+        playerStatusController.stopCountdown()
         connection.disconnect()
+    }
+
+    /**
+     * Used by the token prompt's Cancel button and by the LockedOut prompt's
+     * OK button - both mean "leave the client", and both disconnect cleanly
+     * first. The UI itself calls Activity.finish() right after, matching the
+     * app's existing Exit-button convention elsewhere (see ConnectScreen /
+     * SongInfoScreen).
+     */
+    fun exitAfterTokenPrompt() {
+        disconnect()
+    }
+
+    fun submitToken(candidate: String) {
+        authController.submitToken(candidate)
+    }
+
+    fun bypassToken() {
+        authController.bypassToken()
+    }
+
+    fun dismissInvalidToken() {
+        authController.dismissInvalid()
     }
 
     /**
@@ -251,28 +248,13 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
         sendMessage(request)
     }
 
-    // --- Remaining-time countdown ---
-
-    private fun formatRemaining(seconds: Int): String {
-        if (seconds <= 0) return "0:00"
-        return "%d:%02d".format(seconds / 60, seconds % 60)
-    }
-
-    private fun startCountdown() {
-        stopCountdown()
-        if (remainingSeconds <= 0) return
-        countdownJob = viewModelScope.launch {
-            while (isActive && remainingSeconds > 0) {
-                delay(1.seconds)
-                remainingSeconds -= 1
-                _remainingTime.value = formatRemaining(remainingSeconds)
-            }
-        }
-    }
-
-    private fun stopCountdown() {
-        countdownJob?.cancel()
-        countdownJob = null
+    /** Called by AuthController once auth is resolved (or wasn't required) after connect. */
+    private fun finishConnectHandshake() {
+        connection.markReady()
+        // The one and only initial request, sent once the server has
+        // accepted us and any required auth is resolved - bundles song info,
+        // playlists, and engine state.
+        requestInitialInfo()
     }
 
     fun requestSongInfo() {
@@ -296,146 +278,39 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // --- Playlists / queue ---
-
-    private fun requestPlaylistSongs(playlistId: Int, upcomingCount: Int) {
-        val request = Message.newBuilder()
-            .setType(MsgType.MSG_TYPE_REQUEST_PLAYLIST_SONGS)
-            .setRequestPlaylistSongs(
-                RequestPlaylistSongs.newBuilder()
-                    .setPlaylistId(playlistId)
-                    .setUpcomingCount(upcomingCount)
-                    .build()
-            )
-            .build()
-        sendMessage(request)
-    }
+    // Thin pass-throughs so screens keep a single ViewModel reference rather
+    // than needing to know PlaylistController/QueueController exist.
 
     /**
      * The single entry point for asking the server for the queue view.
-     * upcomingCount comes from the UI's actual measured screen space - the
-     * ViewModel has no opinion on how many rows fit on any given device.
+     * upcomingCount comes from the UI's actual measured screen space - no
+     * controller has an opinion on how many rows fit on any given device.
      */
     fun refreshVisibleQueue(upcomingCount: Int) {
-        if (!hasViewedPlaylist) return
-        lastRequestedUpcomingCount = upcomingCount
-        requestPlaylistSongs(viewedPlaylistId, upcomingCount)
+        if (!playlistController.hasViewedPlaylist) return
+        queueController.requestPlaylistSongs(playlistController.viewedPlaylistId, upcomingCount)
     }
 
-    /** rowIndex must come from a current/upcoming QueueRowData - never from previousRows. */
     fun requestPlaySong(rowIndex: Int) {
-        if (!hasViewedPlaylist) return
-        val request = Message.newBuilder()
-            .setType(MsgType.MSG_TYPE_REQUEST_PLAY_SONG)
-            .setRequestPlaySong(
-                RequestPlaySong.newBuilder()
-                    .setPlaylistId(viewedPlaylistId)
-                    .setRowIndex(rowIndex)
-                    .build()
-            )
-            .build()
-        sendMessage(request)
+        playlistController.requestPlaySong(rowIndex)
     }
 
-    /**
-     * Adds the currently-playing song to another playlist. If newPlaylistName
-     * is non-empty the server creates a new playlist and ignores
-     * targetPlaylistId. The server only ever adds whatever is actually
-     * playing, not an arbitrary row - matches the "current row only" context
-     * menu restriction from the Qt client.
-     */
     fun addCurrentSongToPlaylist(targetPlaylistId: Int, newPlaylistName: String = "") {
-        val request = Message.newBuilder()
-            .setType(MsgType.MSG_TYPE_REQUEST_ADD_SONG_TO_PLAYLIST)
-            .setRequestAddSongToPlaylist(
-                RequestAddSongToPlaylist.newBuilder()
-                    .setTargetPlaylistId(targetPlaylistId)
-                    .setNewPlaylistName(newPlaylistName)
-                    .build()
-            )
-            .build()
-        sendMessage(request)
+        playlistController.addCurrentSongToPlaylist(targetPlaylistId, newPlaylistName)
     }
 
-    /** rowIndex must come from a current/upcoming QueueRowData - never from previousRows. */
     fun removeSongFromPlaylist(rowIndex: Int) {
-        if (!hasViewedPlaylist) return
-        val request = Message.newBuilder()
-            .setType(MsgType.MSG_TYPE_REQUEST_REMOVE_SONG_FROM_PLAYLIST)
-            .setRequestRemoveSongFromPlaylist(
-                RequestRemoveSongFromPlaylist.newBuilder()
-                    .setPlaylistId(viewedPlaylistId)
-                    .setRowIndex(rowIndex)
-                    .build()
-            )
-            .build()
-        sendMessage(request)
+        playlistController.removeSongFromPlaylist(rowIndex)
     }
 
-    /**
-     * Called when the user taps a different playlist tab. Only resets local
-     * state and the viewed pointer - it does NOT request songs itself. The
-     * UI's BoxWithConstraints effect (keyed on viewedPlaylistIndex) is
-     * responsible for calling refreshVisibleQueue() with the correct count,
-     * so there is exactly one source of truth for upcomingCount.
-     */
     fun selectPlaylistTab(index: Int) {
-        val tabs = _playlists.value
-        if (index < 0 || index >= tabs.size) return
-        resetQueueViewTo(tabs[index].id)
-    }
-
-    private fun resetQueueViewTo(playlistId: Int) {
-        viewedPlaylistId = playlistId
-        hasViewedPlaylist = true
-        val idx = _playlists.value.indexOfFirst { it.id == playlistId }
-        _viewedPlaylistIndex.value = idx
-        _previousRows.value = emptyList()
-        _currentRow.value = null
-        _upcomingRows.value = emptyList()
-        _columns.value = emptyList()
+        playlistController.selectTab(index)
     }
 
     // --- Messaging ---
-    // Thin pass-through to StrawberryConnection - kept as a member so every
-    // existing call site (requestX methods above) doesn't need to reach
-    // through a second object reference.
 
     fun sendMessage(message: Message) {
         connection.sendMessage(message)
-    }
-
-    /** Shared by MSG_TYPE_REPLY_SONG_INFO and the songInfo field inside MSG_TYPE_RESPONSE_INITIAL_INFO. */
-    private fun applySongMetadata(response: ResponseSongMetadata) {
-        val state = response.playerState
-        if (state == PlayerState.PLAYER_STATUS_UNSPECIFIED ||
-            state == PlayerState.PLAYER_STATUS_EMPTY
-        ) {
-            // Nothing loaded in the player.
-            _playerStatus.value = "No song selected"
-            stopCountdown()
-            remainingSeconds = 0
-            _remainingTime.value = ""
-        } else {
-            _playerStatus.value = when (state) {
-                PlayerState.PLAYER_STATUS_PLAYING -> "Playing"
-                PlayerState.PLAYER_STATUS_PAUSED -> "Paused"
-                PlayerState.PLAYER_STATUS_IDLE -> "Idle"
-                PlayerState.PLAYER_STATUS_ERROR -> "Error"
-                else -> "Unknown"
-            }
-
-            // Resync the countdown from the server's authoritative position.
-            val length = response.lengthSeconds
-            val position = response.positionSeconds
-            remainingSeconds = if (length > position) (length - position) else 0
-            _remainingTime.value = formatRemaining(remainingSeconds)
-
-            if (state == PlayerState.PLAYER_STATUS_PLAYING) {
-                startCountdown()
-            } else {
-                stopCountdown()
-            }
-        }
     }
 
     private fun processResponse(response: Message) {
@@ -452,7 +327,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                         Log.w(
                             "SharedViewModel",
                             "Server protocol version ${response.version} is older than " +
-                                    "the minimum this app supports (${ProtocolConstants.MIN_SUPPORTED_VERSION})"
+                                "the minimum this app supports (${ProtocolConstants.MIN_SUPPORTED_VERSION})"
                         )
                         _fatalConnectionError.value =
                             "This version of Strawberry's Network Remote is too old for this app. Please update Strawberry."
@@ -463,144 +338,125 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                         "SharedViewModel",
                         "Handshake accepted, server protocol version ${response.version}"
                     )
-                    connection.markReady()
-                    // The one and only initial request, sent once the server has
-                    // accepted us - bundles song info, playlists, and engine state.
-                    requestInitialInfo()
+                    // AuthController decides whether to proceed straight to
+                    // finishConnectHandshake() or hold off for the token
+                    // prompt - either way it calls back into
+                    // onConnectHandshakeReady() when it's safe to continue.
+                    authController.onResponseConnect(response.responseConnect.authEnabled)
                 } else {
                     connection.setError("Server refused the connection")
                 }
             }
             MsgType.MSG_TYPE_REPLY_SONG_INFO -> {
-                applySongMetadata(response.responseSongMetadata)
+                playerStatusController.applySongMetadata(response.responseSongMetadata)
             }
             MsgType.MSG_TYPE_RESPONSE_INITIAL_INFO -> {
                 val initialInfo = response.responseInitialInfo
-                applySongMetadata(initialInfo.songInfo)
+                playerStatusController.applySongMetadata(initialInfo.songInfo)
 
-                val tabs = mutableListOf<PlaylistTab>()
-                var newActiveIndex = -1
-                hasActivePlaylist = false
-                initialInfo.playlists.playlistsList.forEachIndexed { idx, pl ->
-                    tabs.add(PlaylistTab(id = pl.id, name = pl.name))
-                    if (pl.isPlaying) {
-                        activePlaylistId = pl.id
-                        newActiveIndex = idx
-                        hasActivePlaylist = true
-                    }
+                val tabs = initialInfo.playlists.playlistsList.map {
+                    PlaylistTab(id = it.id, name = it.name)
                 }
-                _playlists.value = tabs
-                _activePlaylistIndex.value = newActiveIndex
+                val activeId = initialInfo.playlists.playlistsList.firstOrNull { it.isPlaying }?.id
+                playlistController.applyInitialPlaylists(tabs, activeId)
 
-                if (hasActivePlaylist) {
-                    resetQueueViewTo(activePlaylistId)
+                if (playlistController.hasActivePlaylist) {
                     // First request uses the placeholder count; the UI's own
                     // measurement effect will immediately follow up with the
                     // real, screen-derived count once it composes.
-                    requestPlaylistSongs(activePlaylistId, lastRequestedUpcomingCount)
+                    queueController.requestPlaylistSongs(
+                        playlistController.activePlaylistId,
+                        queueController.lastRequestedUpcomingCount
+                    )
                 }
             }
             MsgType.MSG_TYPE_RESPONSE_PLAYLIST_SONGS -> {
-                val playlistSongs = response.responsePlaylistSongs
-                if (hasViewedPlaylist && playlistSongs.playlistId != viewedPlaylistId) {
-                    // Stale response for a playlist we've since navigated away from.
-                    return
-                }
-
-                val newColumns = playlistSongs.columnsList.map {
-                    ColumnInfo(name = it.name, isNumeric = it.isNumeric)
-                }
-                if (newColumns != _columns.value) {
-                    // Visible columns changed on the desktop mid-session: old
-                    // cached rows would no longer line up against new headers.
-                    _previousRows.value = emptyList()
-                    _columns.value = newColumns
-                }
-
-                val rows = playlistSongs.rowsList
-                val newCurrent: QueueRowData? = if (rows.isNotEmpty()) {
-                    QueueRowData(rows[0].valuesList, rows[0].rowIndex)
-                } else null
-                val newUpcoming = if (rows.size > 1) {
-                    rows.drop(1).map { QueueRowData(it.valuesList, it.rowIndex) }
-                } else emptyList()
-
-                val oldCurrent = _currentRow.value
-                if (oldCurrent != null && oldCurrent.values != newCurrent?.values) {
-                    val updated = _previousRows.value + oldCurrent
-                    _previousRows.value = if (updated.size > MAX_PREVIOUS_ROWS) {
-                        updated.takeLast(MAX_PREVIOUS_ROWS)
-                    } else {
-                        updated
-                    }
-                }
-
-                _currentRow.value = newCurrent
-                _upcomingRows.value = newUpcoming
+                queueController.onResponsePlaylistSongs(
+                    response.responsePlaylistSongs,
+                    if (playlistController.hasViewedPlaylist) playlistController.viewedPlaylistId else null
+                )
             }
             MsgType.MSG_TYPE_RESPONSE_PLAY_SONG -> {
-                if (response.responsePlaySong.accepted && hasViewedPlaylist) {
+                if (response.responsePlaySong.accepted && playlistController.hasViewedPlaylist) {
                     // Refreshes the queue for whatever playlist we just played
                     // from. If that playlist was previously inactive,
                     // PLAYLIST_ACTIVATED (below) handles the tab/active-state update.
-                    requestPlaylistSongs(viewedPlaylistId, lastRequestedUpcomingCount)
+                    queueController.requestPlaylistSongs(
+                        playlistController.viewedPlaylistId,
+                        queueController.lastRequestedUpcomingCount
+                    )
                 }
             }
             MsgType.MSG_TYPE_PLAYLIST_ACTIVATED -> {
                 val activated = response.playlistActivated
-                activePlaylistId = activated.playlistId
-                hasActivePlaylist = true
-                _activePlaylistIndex.value = _playlists.value.indexOfFirst { it.id == activePlaylistId }
-
+                playlistController.onPlaylistActivated(activated.playlistId)
                 // Follow the newly-active playlist, mirroring the Qt client.
-                resetQueueViewTo(activePlaylistId)
-                requestPlaylistSongs(activePlaylistId, lastRequestedUpcomingCount)
+                queueController.requestPlaylistSongs(
+                    activated.playlistId,
+                    queueController.lastRequestedUpcomingCount
+                )
             }
             MsgType.MSG_TYPE_PLAYLIST_CHANGED -> {
                 val changed = response.playlistChanged
-                if (hasViewedPlaylist && changed.playlistId == viewedPlaylistId) {
-                    requestPlaylistSongs(viewedPlaylistId, lastRequestedUpcomingCount)
+                if (playlistController.hasViewedPlaylist &&
+                    changed.playlistId == playlistController.viewedPlaylistId
+                ) {
+                    queueController.requestPlaylistSongs(
+                        playlistController.viewedPlaylistId,
+                        queueController.lastRequestedUpcomingCount
+                    )
                 }
             }
             MsgType.MSG_TYPE_RESPONSE_ADD_SONG_TO_PLAYLIST -> {
-                if (!response.responseAddSongToPlaylist.accepted) {
-                    _actionError.value = "Failed to add song to playlist"
-                }
-                // On success, the server's PLAYLIST_CHANGED broadcast for the
-                // target playlist refreshes the view if we're looking at it.
+                playlistController.onResponseAddSongToPlaylist(response.responseAddSongToPlaylist)
+                    ?.let { reason -> authController.onTokenRejected(reason) }
+                // On success, the server's PLAYLIST_CHANGED broadcast (for
+                // the target playlist) refreshes the view if we're looking
+                // at it; no direct action needed here otherwise.
             }
             MsgType.MSG_TYPE_RESPONSE_REMOVE_SONG_FROM_PLAYLIST -> {
-                if (!response.responseRemoveSongFromPlaylist.accepted) {
-                    _actionError.value = "Failed to remove song from playlist"
-                }
+                playlistController.onResponseRemoveSongFromPlaylist(response.responseRemoveSongFromPlaylist)
+                    ?.let { reason -> authController.onTokenRejected(reason) }
+            }
+            MsgType.MSG_TYPE_RESPONSE_VALIDATE_TOKEN -> {
+                authController.onValidateTokenResponse(response.responseValidateToken.valid)
+            }
+            MsgType.MSG_TYPE_AUTH_STATUS_CHANGED -> {
+                authController.onAuthStatusChanged(response.authStatusChanged.authEnabled)
             }
             MsgType.MSG_TYPE_ENGINE_STATE_CHANGE -> {
                 when (response.engineStateChange.state) {
                     EngineState.ENGINE_STATE_PLAYING -> {
-                        _playerStatus.value = "Playing"
+                        playerStatusController.setPlaying()
                         // Requesting song info here restarts the countdown with
                         // a fresh position, which is also how a desktop seek resyncs.
                         requestSongInfo()
                         // The current/upcoming rows may have shifted; refresh
                         // the queue too, but only if we're looking at the
                         // playlist that's actually playing.
-                        if (hasViewedPlaylist && hasActivePlaylist && viewedPlaylistId == activePlaylistId) {
-                            requestPlaylistSongs(activePlaylistId, lastRequestedUpcomingCount)
+                        if (playlistController.hasViewedPlaylist &&
+                            playlistController.hasActivePlaylist &&
+                            playlistController.viewedPlaylistId == playlistController.activePlaylistId
+                        ) {
+                            queueController.requestPlaylistSongs(
+                                playlistController.activePlaylistId,
+                                queueController.lastRequestedUpcomingCount
+                            )
                         }
                     }
-                    EngineState.ENGINE_STATE_PAUSED -> {
-                        _playerStatus.value = "Paused"
-                        stopCountdown()
-                    }
-                    else -> {
-                        _playerStatus.value = "Stopped"
-                        stopCountdown()
-                    }
+                    EngineState.ENGINE_STATE_PAUSED -> playerStatusController.setPaused()
+                    else -> playerStatusController.setStopped()
                 }
             }
             MsgType.MSG_TYPE_DISCONNECT -> {
-                stopCountdown()
+                playerStatusController.stopCountdown()
                 val reason = response.requestDisconnect.reasonDisconnect
+                if (reason == ReasonDisconnect.REASON_DISCONNECT_TOO_MANY_FAILED_ATTEMPTS) {
+                    // Takes priority over the generic disconnect banner: an
+                    // explicit "locked out" step with its own OK, matching
+                    // the token prompt's other terminal states.
+                    authController.onLockedOut()
+                }
                 val text = when (reason) {
                     ReasonDisconnect.REASON_DISCONNECT_VERSION_MISMATCH ->
                         "Server rejected this app: protocol version too old"
@@ -610,6 +466,8 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                         "Server rejected this app: handshake missing"
                     ReasonDisconnect.REASON_DISCONNECT_SERVER_SHUTDOWN ->
                         "Strawberry has been closed on the desktop."
+                    ReasonDisconnect.REASON_DISCONNECT_TOO_MANY_FAILED_ATTEMPTS ->
+                        "Disconnected: too many failed authentication attempts."
                     else -> "Server closed the connection"
                 }
                 Log.w("SharedViewModel", text)
@@ -624,7 +482,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
-        stopCountdown()
+        playerStatusController.stopCountdown()
         connection.shutdown()
     }
 }

@@ -1,3 +1,22 @@
+/*
+ * Client for the Strawberry Music Player
+ * Copyright 2026, Leopold List <leo@zudiewiener.com>
+ *
+ * Client for the Strawberry Music Player is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Client for the Strawberry Music Player is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Client for the Strawberry Music Player.
+ * If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
 package com.zudiewiener.strawberryremote.screen
 
 import android.content.Context
@@ -42,6 +61,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.zudiewiener.strawberryremote.logic.AuthController
 import com.zudiewiener.strawberryremote.net.ConnectionState
 import com.zudiewiener.strawberryremote.util.SharedViewModel
 import kotlinx.coroutines.launch
@@ -57,6 +77,7 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
     val coroutineScope = rememberCoroutineScope()
     val connectionState by sharedViewModel.connectionState.collectAsState()
     val fatalConnectionError by sharedViewModel.fatalConnectionError.collectAsState()
+    val tokenPrompt by sharedViewModel.tokenPrompt.collectAsState()
     val activity = LocalActivity.current
     var connectionErrorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -86,8 +107,11 @@ fun ConnectScreen(navController: NavController, sharedViewModel: SharedViewModel
                 // own modal below. Everything else - wrong IP, refused
                 // connection, timeout - is retryable, so it also gets a
                 // visible modal instead of an easy-to-miss snackbar, but one
-                // that just dismisses rather than exiting the app.
-                if (fatalConnectionError == null) {
+                // that just dismisses rather than exiting the app. A
+                // too-many-failed-attempts lockout is handled entirely by the
+                // global TokenPromptDialog (MainActivity) - skip this one so
+                // the two modals don't stack.
+                if (fatalConnectionError == null && tokenPrompt !is AuthController.TokenPromptState.LockedOut) {
                     connectionErrorMessage = state.message
                 }
             }

@@ -57,6 +57,13 @@ enum MsgType {
     // Server-initiated broadcasts (sent to all connected clients, not just the requester)
     MSG_TYPE_PLAYLIST_CHANGED = 29;
     MSG_TYPE_PLAYLIST_ACTIVATED = 30;
+
+    // Client initiated if Authentication is enabled
+    MSG_TYPE_REQUEST_VALIDATE_TOKEN = 31;
+    MSG_TYPE_RESPONSE_VALIDATE_TOKEN = 32;
+
+    // If token status chages
+    MSG_TYPE_AUTH_STATUS_CHANGED = 33;
 }
 
 enum PlayerState {
@@ -81,6 +88,14 @@ enum ReasonDisconnect {
     REASON_DISCONNECT_VERSION_MISMATCH = 2;
     REASON_DISCONNECT_UNKNOWN_MSGTYPE = 3;
     REASON_DISCONNECT_NO_HANDSHAKE = 4;
+    REASON_DISCONNECT_TOO_MANY_FAILED_ATTEMPTS = 5;
+}
+
+enum PlaylistRejectReason {
+    PLAYLIST_REJECT_NONE = 0;            // accepted=true, ignore this field
+    PLAYLIST_REJECT_INVALID_REQUEST = 1; // e.g. bad row index, no current song, unknown playlist
+    PLAYLIST_REJECT_TOKEN_MISMATCH = 2;  // auth enabled, client sent a token, but it didn't match
+    PLAYLIST_REJECT_TOKEN_REQUIRED = 3;  // auth enabled, client sent no/empty token
 }
 
 message RequestDisconnect {
@@ -93,6 +108,7 @@ message RequestConnect {
 
 message ResponseConnect {
     bool accepted = 1;
+    bool auth_enabled = 2;
 }
 
 message SongMetadata{
@@ -220,20 +236,24 @@ message ResponsePlaySong {
 message RequestAddSongToPlaylist {
     uint32 target_playlist_id = 1;  // ignored if new_playlist_name is set
     string new_playlist_name = 2;   // non-empty => create playlist, use as target
+    string token = 3;
 }
 
 message ResponseAddSongToPlaylist {
     bool accepted = 1;
     uint32 playlist_id = 2;         // resolved id (existing or newly created)
+    PlaylistRejectReason reject_reason = 3;
 }
 
 message RequestRemoveSongFromPlaylist {
     uint32 playlist_id = 1;
     uint32 row_index = 2;
+    string token = 3;
 }
 
 message ResponseRemoveSongFromPlaylist {
     bool accepted = 1;
+    PlaylistRejectReason reject_reason = 2;
 }
 
 message PlaylistChanged {
@@ -242,6 +262,18 @@ message PlaylistChanged {
 
 message PlaylistActivated {
     uint32 playlist_id = 1;
+}
+
+message RequestValidateToken {
+    string token = 1;
+}
+
+message ResponseValidateToken {
+    bool valid = 1;
+}
+
+message AuthStatusChanged {
+    bool auth_enabled = 1;
 }
 
 message Message {
@@ -275,5 +307,8 @@ message Message {
         ResponseRemoveSongFromPlaylist response_remove_song_from_playlist = 27;
         PlaylistChanged playlist_changed = 28;
         PlaylistActivated playlist_activated = 29;
+        RequestValidateToken request_validate_token = 30;
+        ResponseValidateToken response_validate_token = 31;
+        AuthStatusChanged auth_status_changed = 32;
     }
 }
