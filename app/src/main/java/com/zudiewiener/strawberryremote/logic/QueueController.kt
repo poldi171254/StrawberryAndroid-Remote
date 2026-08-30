@@ -62,9 +62,6 @@ data class QueueRowData(
 class QueueController(private val sendMessage: (Message) -> Unit) {
 
     companion object {
-        // Used only until the UI's first BoxWithConstraints measurement lands
-        // and calls requestPlaylistSongs() with the real, screen-derived count.
-        const val INITIAL_UPCOMING_COUNT = 10
         private const val MAX_PREVIOUS_ROWS = 50
     }
 
@@ -80,16 +77,6 @@ class QueueController(private val sendMessage: (Message) -> Unit) {
     private val _upcomingRows = MutableStateFlow<List<QueueRowData>>(emptyList())
     val upcomingRows: StateFlow<List<QueueRowData>> = _upcomingRows.asStateFlow()
 
-    /**
-     * The UI is the only thing that knows the actual measured screen space,
-     * so it always supplies upcomingCount via requestPlaylistSongs(). This
-     * caches the last value requested, so internal auto-refreshes (after
-     * play/add/remove, broadcasts) can reuse it instead of guessing a flat
-     * default.
-     */
-    var lastRequestedUpcomingCount = INITIAL_UPCOMING_COUNT
-        private set
-
     /** Called when the viewed playlist identity changes - old rows/columns no longer apply. */
     fun resetView() {
         _previousRows.value = emptyList()
@@ -98,14 +85,43 @@ class QueueController(private val sendMessage: (Message) -> Unit) {
         _columns.value = emptyList()
     }
 
-    fun requestPlaylistSongs(playlistId: Int, upcomingCount: Int) {
-        lastRequestedUpcomingCount = upcomingCount
+    /**
+     * Appends a row to previousRows, capped at MAX_PREVIOUS_ROWS. Removes any
+     * existing entry with the same rowIndex first - previousRows represents
+     * "recently played" and should never show the same absolute playlist
+     * position twice, whether from a legitimate replay (user jumps back to
+     * an earlier row) or two near-simultaneous transitions both reporting
+     * the same outgoing row. Kept as defense-in-depth even after removing
+     * the redundant PLAYLIST_CHANGED-triggered re-fetch (see SharedViewModel)
+     * that was the main source of these near-simultaneous responses.
+     */
+    private fun pushToPrevious(row: QueueRowData) {
+        val deduplicated = _previousRows.value.filterNot { it.rowIndex == row.rowIndex }
+        val updated = deduplicated + row
+        _previousRows.value = if (updated.size > MAX_PREVIOUS_ROWS) {
+            updated.takeLast(MAX_PREVIOUS_ROWS)
+        } else {
+            updated
+        }
+    }
+
+    /**
+     * The client's only proactive request-driven use of this: the initial
+     * fetch when a playlist is first displayed (new connection, tab switch,
+     * or following a newly-activated playlist). After that, staying in sync
+     * is entirely server-pushed - see onPlaylistAdvanced() and
+     * onResponsePlaylistSongs() (the latter also serves as the full-resend
+     * target for human-initiated changes). The request no longer specifies a
+     * count - the server's own configured PlaylistSize setting is now the
+     * sole source of truth for the window size, so there was nothing left
+     * for the client to usefully ask for.
+     */
+    fun requestPlaylistSongs(playlistId: Int) {
         val request = Message.newBuilder()
             .setType(MsgType.MSG_TYPE_REQUEST_PLAYLIST_SONGS)
             .setRequestPlaylistSongs(
                 RequestPlaylistSongs.newBuilder()
                     .setPlaylistId(playlistId)
-                    .setUpcomingCount(upcomingCount)
                     .build()
             )
             .build()
@@ -139,15 +155,46 @@ class QueueController(private val sendMessage: (Message) -> Unit) {
 
         val oldCurrent = _currentRow.value
         if (oldCurrent != null && oldCurrent.values != newCurrent?.values) {
-            val updated = _previousRows.value + oldCurrent
-            _previousRows.value = if (updated.size > MAX_PREVIOUS_ROWS) {
-                updated.takeLast(MAX_PREVIOUS_ROWS)
-            } else {
-                updated
-            }
+            pushToPrevious(oldCurrent)
         }
 
         _currentRow.value = newCurrent
         _upcomingRows.value = newUpcoming
+    }
+
+    /**
+     * PLAYLIST_ADVANCED: the one common, high-frequency case where a song
+     * finishes naturally and the next row starts playing automatically.
+     * Incrementally slides the local window rather than waiting for a full
+     * resend - the promoted row is expected to already be the top of
+     * upcomingRows (per the protocol's guarantee that it was already in the
+     * client's cached window a moment ago).
+     */
+    fun onPlaylistAdvanced(
+        playlistId: Int,
+        newCurrentRow: Int,
+        trailingRow: QueueRowData?,
+        viewedPlaylistId: Int?
+    ) {
+        if (viewedPlaylistId == null || playlistId != viewedPlaylistId) return
+
+        val upcoming = _upcomingRows.value
+        val promotedIndex = upcoming.indexOfFirst { it.rowIndex == newCurrentRow }
+        if (promotedIndex < 0) {
+            // The advanced-to row wasn't in our cached window - local state
+            // has drifted from the server's for some reason. Rather than
+            // guess, ask for a fresh full window; the server is always the
+            // source of truth (see onResponsePlaylistSongs).
+            requestPlaylistSongs(playlistId)
+            return
+        }
+
+        _currentRow.value?.let { oldCurrent ->
+            pushToPrevious(oldCurrent)
+        }
+
+        _currentRow.value = upcoming[promotedIndex]
+        val remaining = upcoming.subList(promotedIndex + 1, upcoming.size)
+        _upcomingRows.value = if (trailingRow != null) remaining + trailingRow else remaining
     }
 }

@@ -1,3 +1,22 @@
+/*
+ * Client for the Strawberry Music Player
+ * Copyright 2026, Leopold List <leo@zudiewiener.com>
+ *
+ * Client for the Strawberry Music Player is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Client for the Strawberry Music Player is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Client for the Strawberry Music Player.
+ * If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
 package com.zudiewiener.strawberryremote.screen
 
 import androidx.activity.compose.LocalActivity
@@ -33,15 +52,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 
+/**
+ * Deliberately short: this shows on every launch (it's the NavHost's start
+ * destination, not a one-time first-run screen), so only the one thing the
+ * user actually needs before tapping Continue lives here. The detailed
+ * setup walkthrough (exact menu path, what the IP/port fields mean, the
+ * firewall note) moved to AppBar's About dialog (ⓘ) instead - reference
+ * material worth having available, but not worth re-reading on every open.
+ */
 @Composable
 fun WelcomeScreen(navController: NavController) {
     val activity = LocalActivity.current
@@ -86,7 +107,9 @@ fun WelcomeScreen(navController: NavController) {
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Scrollable instructions
+            // Scrollable instructions - unlikely to need scrolling at this
+            // length, but kept for accessibility (large system font sizes
+            // can still make it overflow on small screens).
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -94,7 +117,7 @@ fun WelcomeScreen(navController: NavController) {
                     .verticalScroll(scrollState)
             ) {
                 InstructionText(
-                    "Thank you for using the Strawberry network remote."
+                    "Thank you for using the Strawberry Network Remote."
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 InstructionText(
@@ -103,82 +126,10 @@ fun WelcomeScreen(navController: NavController) {
                             "local network as the player."
                 )
                 Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "To enable the remote you need to go to:",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Tools → Settings → Remote",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = buildAnnotatedString {
-                        append("and select ")
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                            append("Use Remote Network Client")
-                        }
-                        append(".")
-                    },
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = buildAnnotatedString {
-                        append("You also need to take note of ")
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                            append("The Player IP Address")
-                        }
-                        append(
-                            " — this is the IP address of the player used by " +
-                                    "Strawberry and cannot be changed."
-                        )
-                    },
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = buildAnnotatedString {
-                        append("Finally you need to take note of the ")
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                            append("Remote Port")
-                        }
-                        append(". This port can be changed if needed.")
-                    },
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = buildAnnotatedString {
-                        append("Make sure you select ")
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                            append("Apply")
-                        }
-                        append(" or ")
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                            append("OK")
-                        }
-                        append(
-                            " at the bottom of the settings screen " +
-                                    "to apply any changes."
-                        )
-                    },
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Spacer(modifier = Modifier.height(16.dp))
                 InstructionText(
-                    "If you are using a firewall, you may need to allow " +
-                            "local connections for the selected port."
+                    "Tap the ⓘ button above for detailed setup steps, including the " +
+                            "exact menu path, what the network settings mean, and " +
+                            "troubleshooting tips."
                 )
                 Spacer(modifier = Modifier.height(8.dp))
             }

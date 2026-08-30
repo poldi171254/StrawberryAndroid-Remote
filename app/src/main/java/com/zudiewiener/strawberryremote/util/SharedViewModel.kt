@@ -1,3 +1,4 @@
+
 /*
  * Client for the Strawberry Music Player
  * Copyright 2026, Leopold List <leo@zudiewiener.com>
@@ -77,7 +78,15 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     private val playlistController = PlaylistController(
         sendMessage = { sendMessage(it) },
         getToken = { authController.currentToken },
-        onViewedPlaylistChanged = { queueController.resetView() }
+        onViewedPlaylistChanged = { playlistId ->
+            // Only proactive fetch left in the queue lifecycle: an initial
+            // window for whatever playlist just became viewed (new
+            // connection, tab switch, or following a newly-activated
+            // playlist). Everything after this is server-pushed - see
+            // MSG_TYPE_PLAYLIST_ADVANCED and the full-resend cases below.
+            queueController.resetView()
+            queueController.requestPlaylistSongs(playlistId)
+        }
     )
 
     private val playerStatusController = PlayerStatusController(viewModelScope)
@@ -281,16 +290,6 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     // Thin pass-throughs so screens keep a single ViewModel reference rather
     // than needing to know PlaylistController/QueueController exist.
 
-    /**
-     * The single entry point for asking the server for the queue view.
-     * upcomingCount comes from the UI's actual measured screen space - no
-     * controller has an opinion on how many rows fit on any given device.
-     */
-    fun refreshVisibleQueue(upcomingCount: Int) {
-        if (!playlistController.hasViewedPlaylist) return
-        queueController.requestPlaylistSongs(playlistController.viewedPlaylistId, upcomingCount)
-    }
-
     fun requestPlaySong(rowIndex: Int) {
         playlistController.requestPlaySong(rowIndex)
     }
@@ -327,7 +326,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                         Log.w(
                             "SharedViewModel",
                             "Server protocol version ${response.version} is older than " +
-                                "the minimum this app supports (${ProtocolConstants.MIN_SUPPORTED_VERSION})"
+                                    "the minimum this app supports (${ProtocolConstants.MIN_SUPPORTED_VERSION})"
                         )
                         _fatalConnectionError.value =
                             "This version of Strawberry's Network Remote is too old for this app. Please update Strawberry."
@@ -357,18 +356,11 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                 val tabs = initialInfo.playlists.playlistsList.map {
                     PlaylistTab(id = it.id, name = it.name)
                 }
-                val activeId = initialInfo.playlists.playlistsList.firstOrNull { it.isPlaying }?.id
+                val activeId = initialInfo.playlists.playlistsList.firstOrNull { it.isCurrent }?.id
                 playlistController.applyInitialPlaylists(tabs, activeId)
-
-                if (playlistController.hasActivePlaylist) {
-                    // First request uses the placeholder count; the UI's own
-                    // measurement effect will immediately follow up with the
-                    // real, screen-derived count once it composes.
-                    queueController.requestPlaylistSongs(
-                        playlistController.activePlaylistId,
-                        queueController.lastRequestedUpcomingCount
-                    )
-                }
+                // applyInitialPlaylists() already triggers the initial queue
+                // fetch via onViewedPlaylistChanged if there's an active
+                // playlist to follow - nothing further needed here.
             }
             MsgType.MSG_TYPE_RESPONSE_PLAYLIST_SONGS -> {
                 queueController.onResponsePlaylistSongs(
@@ -376,43 +368,58 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                     if (playlistController.hasViewedPlaylist) playlistController.viewedPlaylistId else null
                 )
             }
-            MsgType.MSG_TYPE_RESPONSE_PLAY_SONG -> {
-                if (response.responsePlaySong.accepted && playlistController.hasViewedPlaylist) {
-                    // Refreshes the queue for whatever playlist we just played
-                    // from. If that playlist was previously inactive,
-                    // PLAYLIST_ACTIVATED (below) handles the tab/active-state update.
-                    queueController.requestPlaylistSongs(
-                        playlistController.viewedPlaylistId,
-                        queueController.lastRequestedUpcomingCount
-                    )
+            MsgType.MSG_TYPE_PLAYLIST_ADVANCED -> {
+                // The common, high-frequency case: a song finished naturally
+                // and the next row in the playlist started automatically.
+                // trailing_row is a proto3 message-type field, so presence is
+                // checked via hasTrailingRow() rather than a sentinel value.
+                val advanced = response.playlistAdvanced
+                val trailingRow = if (advanced.hasTrailingRow()) {
+                    QueueRowData(advanced.trailingRow.valuesList, advanced.trailingRow.rowIndex)
+                } else {
+                    null
                 }
+                queueController.onPlaylistAdvanced(
+                    advanced.playlistId,
+                    advanced.newCurrentRow,
+                    trailingRow,
+                    if (playlistController.hasViewedPlaylist) playlistController.viewedPlaylistId else null
+                )
+            }
+            MsgType.MSG_TYPE_RESPONSE_PLAY_SONG -> {
+                // No client action needed on success: jump-to-song is a
+                // human-initiated change, so the server automatically pushes
+                // a full ResponsePlaylistSongs resend for it - the queue
+                // updates itself via MSG_TYPE_RESPONSE_PLAYLIST_SONGS below.
+                // If the playlist wasn't previously active, PLAYLIST_ACTIVATED
+                // also fires and follows it (see that case below).
             }
             MsgType.MSG_TYPE_PLAYLIST_ACTIVATED -> {
                 val activated = response.playlistActivated
+                // onPlaylistActivated() follows the newly-active playlist
+                // (mirroring the Qt client) and its internal viewPlaylist()
+                // call already triggers the initial queue fetch via
+                // onViewedPlaylistChanged - nothing further needed here.
                 playlistController.onPlaylistActivated(activated.playlistId)
-                // Follow the newly-active playlist, mirroring the Qt client.
-                queueController.requestPlaylistSongs(
-                    activated.playlistId,
-                    queueController.lastRequestedUpcomingCount
-                )
             }
             MsgType.MSG_TYPE_PLAYLIST_CHANGED -> {
-                val changed = response.playlistChanged
-                if (playlistController.hasViewedPlaylist &&
-                    changed.playlistId == playlistController.viewedPlaylistId
-                ) {
-                    queueController.requestPlaylistSongs(
-                        playlistController.viewedPlaylistId,
-                        queueController.lastRequestedUpcomingCount
-                    )
-                }
+                // No client action: the server's automatic full-resend
+                // (RESPONSE_PLAYLIST_SONGS, human-initiated changes) and
+                // PLAYLIST_ADVANCED (natural progression) are the sole
+                // sources of truth for the queue now. Reacting to this too
+                // (as a "fallback") was producing a third near-simultaneous
+                // response for the same transition, which was implicated in
+                // an ordering hazard that corrupted the local previous/
+                // current/upcoming window - removed rather than kept as a
+                // defensive fallback.
             }
             MsgType.MSG_TYPE_RESPONSE_ADD_SONG_TO_PLAYLIST -> {
                 playlistController.onResponseAddSongToPlaylist(response.responseAddSongToPlaylist)
                     ?.let { reason -> authController.onTokenRejected(reason) }
-                // On success, the server's PLAYLIST_CHANGED broadcast (for
-                // the target playlist) refreshes the view if we're looking
-                // at it; no direct action needed here otherwise.
+                // On success, no direct action needed here: add/remove is a
+                // human-initiated change to playlist contents, so the server
+                // automatically pushes a full ResponsePlaylistSongs resend
+                // for whichever playlist(s) it affects.
             }
             MsgType.MSG_TYPE_RESPONSE_REMOVE_SONG_FROM_PLAYLIST -> {
                 playlistController.onResponseRemoveSongFromPlaylist(response.responseRemoveSongFromPlaylist)
@@ -431,18 +438,10 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                         // Requesting song info here restarts the countdown with
                         // a fresh position, which is also how a desktop seek resyncs.
                         requestSongInfo()
-                        // The current/upcoming rows may have shifted; refresh
-                        // the queue too, but only if we're looking at the
-                        // playlist that's actually playing.
-                        if (playlistController.hasViewedPlaylist &&
-                            playlistController.hasActivePlaylist &&
-                            playlistController.viewedPlaylistId == playlistController.activePlaylistId
-                        ) {
-                            queueController.requestPlaylistSongs(
-                                playlistController.activePlaylistId,
-                                queueController.lastRequestedUpcomingCount
-                            )
-                        }
+                        // No queue re-fetch needed: a natural song advance is
+                        // exactly what MSG_TYPE_PLAYLIST_ADVANCED handles
+                        // incrementally now, and any other cause of a play
+                        // state change arrives via a full resend instead.
                     }
                     EngineState.ENGINE_STATE_PAUSED -> playerStatusController.setPaused()
                     else -> playerStatusController.setStopped()

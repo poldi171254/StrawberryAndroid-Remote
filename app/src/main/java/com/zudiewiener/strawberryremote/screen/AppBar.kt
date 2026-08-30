@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.AlertDialog
@@ -55,7 +57,7 @@ fun AppBar() {
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.statusBars)
             .height(40.dp)
-            .background(MaterialTheme.colorScheme.surface)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         Text(
             text = "Strawberry Remote",
@@ -109,20 +111,35 @@ private fun AboutDialog(onDismiss: () -> Unit) {
             Text(
                 text = """
                     Version $versionName
-                    
+
                     A network remote control for the Strawberry Music Player.
-                    
+
+                    Setting up the remote:
+                    • In Strawberry, go to Tools → Settings → Remote and enable "Use Remote Network Client".
+                    • Note the Player IP Address shown there - enter this in the client to connect (it cannot be changed).
+                    • Note the Remote Port - this can be changed if needed.
+                    • Click Apply or OK at the bottom of the settings screen for changes to take effect.
+                    • If you're using a firewall, you may need to allow local connections for the selected port.
+
+                    Playlist token (optional):
+                    Playlist changes - adding, removing, or creating a playlist - can be protected with a token, so only clients that know it can modify your playlists. This guards against unwanted changes from other devices on your network.
+                    • Enabled in Strawberry's Remote settings by setting a Remote Token - leave that field empty to disable the protection entirely.
+                    • If a token is set, the client asks for it when you connect. Enter it to enable playlist changes, or choose Bypass to continue read-only (you can still view and play, but not add, remove, or create playlists).
+                    • An incorrect token can be retried - after too many incorrect attempts, the server disconnects the client as a safeguard.
+                    • Turning the token requirement on or off on the player takes effect immediately for clients already connected, prompting for the token if it becomes required.
+
                     For the best view of the song list, enable auto-rotate on your device so the screen can switch to landscape and show more columns.
-                    
+
                     Song list:
                     • Double-tap a song to play it.
                     • Long-press a song for options - add the currently playing song to another playlist, or remove a song from this playlist.
-                    
+
                     © 2026 zudiewiener.com
-                    
+
                 """.trimIndent(),
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.verticalScroll(rememberScrollState())
             )
         },
         confirmButton = {

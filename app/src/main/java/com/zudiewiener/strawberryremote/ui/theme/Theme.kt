@@ -1,3 +1,22 @@
+/*
+ * Client for the Strawberry Music Player
+ * Copyright 2026, Leopold List <leo@zudiewiener.com>
+ *
+ * Client for the Strawberry Music Player is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Client for the Strawberry Music Player is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Client for the Strawberry Music Player.
+ * If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
 package com.zudiewiener.strawberryremote.ui.theme
 
 import android.os.Build
@@ -20,7 +39,14 @@ private val DarkColorScheme = darkColorScheme(
     background = DarkSurface,
     onBackground = DarkOnBackground,
     surfaceVariant = DarkSurfaceVariant,
-    onSurfaceVariant = DarkOnSurfaceVariant
+    onSurfaceVariant = DarkOnSurfaceVariant,
+    // Used for header/chrome elements that need to read as a distinct region
+    // from the plain surface/surfaceVariant tones above. surfaceContainerHigh
+    // (AppBar) is deliberately more opaque than surfaceContainer (playlist
+    // tab row) so the two don't blend into one indistinguishable block -
+    // see DarkHeaderSurface / DarkTabRowSurface.
+    surfaceContainerHigh = DarkHeaderSurface,
+    surfaceContainer = DarkTabRowSurface
 )
 
 private val LightColorScheme = lightColorScheme(
@@ -33,7 +59,9 @@ private val LightColorScheme = lightColorScheme(
     background = LightSurface,
     onBackground = LightOnBackground,
     surfaceVariant = LightSurfaceVariant,
-    onSurfaceVariant = LightOnSurfaceVariant
+    onSurfaceVariant = LightOnSurfaceVariant,
+    surfaceContainerHigh = LightHeaderSurface,
+    surfaceContainer = LightTabRowSurface
 )
 
 @Composable
@@ -59,7 +87,9 @@ fun StrawberryRemoteAndroidTheme(
                     background = DarkSurface,
                     onBackground = DarkOnBackground,
                     surfaceVariant = DarkSurfaceVariant,
-                    onSurfaceVariant = DarkOnSurfaceVariant
+                    onSurfaceVariant = DarkOnSurfaceVariant,
+                    surfaceContainerHigh = DarkHeaderSurface,
+                    surfaceContainer = DarkTabRowSurface
                 )
             } else {
                 dynamicScheme.copy(
@@ -68,7 +98,9 @@ fun StrawberryRemoteAndroidTheme(
                     background = LightSurface,
                     onBackground = LightOnBackground,
                     surfaceVariant = LightSurfaceVariant,
-                    onSurfaceVariant = LightOnSurfaceVariant
+                    onSurfaceVariant = LightOnSurfaceVariant,
+                    surfaceContainerHigh = LightHeaderSurface,
+                    surfaceContainer = LightTabRowSurface
                 )
             }
         }
