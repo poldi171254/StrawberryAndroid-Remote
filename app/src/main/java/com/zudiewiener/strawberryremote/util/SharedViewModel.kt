@@ -27,12 +27,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.zudiewiener.strawberryremote.data.ConnectionConfig
 import com.zudiewiener.strawberryremote.logic.AuthController
-import com.zudiewiener.strawberryremote.logic.ColumnInfo
 import com.zudiewiener.strawberryremote.logic.PlayerStatusController
 import com.zudiewiener.strawberryremote.logic.PlaylistController
 import com.zudiewiener.strawberryremote.logic.PlaylistTab
 import com.zudiewiener.strawberryremote.logic.QueueController
 import com.zudiewiener.strawberryremote.logic.QueueRowData
+import com.zudiewiener.strawberryremote.logic.QueueState
 import com.zudiewiener.strawberryremote.net.ConnectionState
 import com.zudiewiener.strawberryremote.net.StrawberryConnection
 import kotlinx.coroutines.Dispatchers
@@ -125,10 +125,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     val viewedPlaylistIndex: StateFlow<Int> = playlistController.viewedPlaylistIndex
     val actionError: StateFlow<String?> = playlistController.actionError
 
-    val columns: StateFlow<List<ColumnInfo>> = queueController.columns
-    val previousRows: StateFlow<List<QueueRowData>> = queueController.previousRows
-    val currentRow: StateFlow<QueueRowData?> = queueController.currentRow
-    val upcomingRows: StateFlow<List<QueueRowData>> = queueController.upcomingRows
+    val queueState: StateFlow<QueueState> = queueController.queueState
 
     /** Null hides the token prompt entirely. See AuthController.TokenPromptState for the three visible states. */
     val tokenPrompt: StateFlow<AuthController.TokenPromptState?> = authController.tokenPrompt

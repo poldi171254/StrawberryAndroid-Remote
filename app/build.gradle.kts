@@ -22,8 +22,8 @@ android {
         applicationId = "com.zudiewiener.strawberryremote"
         minSdk = 29
         targetSdk = 36
-        versionCode = 31
-        versionName = "1.0.11"
+        versionCode = 35
+        versionName = "1.0.16"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -96,13 +96,6 @@ dependencies {
     implementation(libs.protobuf.java)
     implementation(libs.protobuf.kotlin)
 
-    // Test
-    testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
-    androidTestImplementation(libs.androidx.ui.test.junit4)
-    debugImplementation(libs.androidx.ui.tooling)
-    debugImplementation(libs.androidx.ui.test.manifest)
 }
 
 kotlin {

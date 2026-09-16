@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -44,6 +45,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -109,6 +111,24 @@ internal fun QueueTable(
     val scrollState = rememberScrollState()
     val canScrollBackward by remember { derivedStateOf { scrollState.value > 0 } }
     val canScrollForward by remember { derivedStateOf { scrollState.value < scrollState.maxValue } }
+
+    // Explicit control over vertical scroll position, rather than letting
+    // LazyColumn's default scroll-preservation behavior decide. That default
+    // behavior tries to keep whichever item was previously first-visible
+    // pinned at the same viewport position across content changes - useful
+    // for e.g. a chat list appending at the bottom, but actively wrong here:
+    // a transition prepends a new "previous" entry at the very top (entries
+    // goes from [c-5, u-6, ...] to [p-5, c-6, ...]), and letting Compose keep
+    // the old top item (c) pinned in place scrolls the newly-prepended
+    // previous row above the visible viewport - not un-composed by a bug,
+    // genuinely off-screen, which is why LazyColumn never bothered composing
+    // it at all. Explicitly scrolling to the top on every transition matches
+    // the intended UX anyway (surface previous+current context, the way
+    // other media players auto-scroll their queue to the now-playing item).
+    val listState = rememberLazyListState()
+    LaunchedEffect(currentRow) {
+        listState.scrollToItem(0)
+    }
 
     // Which row (by rowIndex) currently has its context menu open, if any.
     // Also tracks whether that row is the current (bold) row, since only the
@@ -201,30 +221,28 @@ internal fun QueueTable(
             // fits on screen at once. LazyColumn only composes/measures the
             // rows actually visible, so this stays cheap regardless of
             // window size.
-            LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f).fillMaxWidth()
+            ) {
                 itemsIndexed(
                     items = entries,
-                    // current/upcoming: rowIndex is a stable key, excluding
-                    // list position since that shifts for every surviving
-                    // row whenever the window slides (PLAYLIST_ADVANCED) - a
-                    // position-based key would make LazyColumn treat every
-                    // row as "new" on every advance. previous/history:
-                    // rowIndex-based keys have proven not crash-proof in
-                    // practice (a duplicate rowIndex reached the UI at least
-                    // twice despite dedup in QueueController.pushToPrevious -
-                    // likely an ordering hazard between the multiple
-                    // near-simultaneous responses the server can now send
-                    // for one transition), so this region deliberately uses
-                    // list position instead: it's always short (capped at
-                    // MAX_PREVIOUS_ROWS_SHOWN), non-interactive, and doesn't
-                    // need slide-stability, so position-based keys are both
-                    // unconditionally collision-free and cost nothing here.
-                    key = { index, entry ->
-                        if (entry.isPrevious) {
-                            "p-$index"
-                        } else {
-                            "${if (entry.isCurrent) "c" else "u"}-${entry.row.rowIndex}"
-                        }
+                    // rowIndex + category prefix is a stable, unique key.
+                    // Uniqueness within previousRows is enforced at the
+                    // source (see QueueController.pushToPrevious's dedup by
+                    // rowIndex); current/upcoming are always a disjoint
+                    // slice of one server response, so rowIndex alone is
+                    // safe within each category; the prefix guards against
+                    // cross-category coincidence (e.g. a dynamic playlist's
+                    // row-renumbering can legitimately give the previous row
+                    // and the current row the same absolute rowIndex at the
+                    // same moment). Deliberately NOT position-based: that
+                    // was tried earlier and reused the same key ("p-0") for
+                    // whichever song is currently in the previous slot,
+                    // regardless of identity - a stable key mapped to
+                    // changing content.
+                    key = { _, entry ->
+                        "${if (entry.isPrevious) "p" else if (entry.isCurrent) "c" else "u"}-${entry.row.rowIndex}"
                     }
                 ) { index, entry ->
                     QueueRow(

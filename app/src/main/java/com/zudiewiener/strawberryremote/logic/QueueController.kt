@@ -52,6 +52,23 @@ data class QueueRowData(
 )
 
 /**
+ * Everything a screen needs to render the queue view, as one value rather
+ * than four independent pieces. Deliberately NOT four separate StateFlows
+ * (columns/previousRows/currentRow/upcomingRows each on their own): a
+ * collector observing four independent flows has no guarantee of ever
+ * seeing all four at a mutually consistent moment. Bundling into one atomic
+ * StateFlow<QueueState>, updated with a single assignment per transition,
+ * makes that inconsistency structurally impossible: any collector always
+ * sees one complete, self-consistent snapshot.
+ */
+data class QueueState(
+    val columns: List<ColumnInfo> = emptyList(),
+    val previousRows: List<QueueRowData> = emptyList(),
+    val currentRow: QueueRowData? = null,
+    val upcomingRows: List<QueueRowData> = emptyList()
+)
+
+/**
  * Owns the queue/row content for whichever playlist is currently being
  * viewed: columns, previous/current/upcoming rows, and the
  * RequestPlaylistSongs request/response cycle. Has no opinion on which
@@ -63,46 +80,66 @@ class QueueController(private val sendMessage: (Message) -> Unit) {
 
     companion object {
         private const val MAX_PREVIOUS_ROWS = 50
+
+        // Exact display string Strawberry sends for this column (from
+        // Playlist::column_name() server-side) - not a stable identifier in
+        // the protocol, just the visible header text, so this match is
+        // inherently a little fragile (silently stops working if the column
+        // is ever renamed/relocalized, with no compile-time signal). A
+        // future protocol round could add a proper column-kind enum to
+        // ColumnInfo so clients don't have to match on display text.
+        private const val PLAY_COUNT_COLUMN_NAME = "Play Count"
     }
 
-    private val _columns = MutableStateFlow<List<ColumnInfo>>(emptyList())
-    val columns: StateFlow<List<ColumnInfo>> = _columns.asStateFlow()
-
-    private val _previousRows = MutableStateFlow<List<QueueRowData>>(emptyList())
-    val previousRows: StateFlow<List<QueueRowData>> = _previousRows.asStateFlow()
-
-    private val _currentRow = MutableStateFlow<QueueRowData?>(null)
-    val currentRow: StateFlow<QueueRowData?> = _currentRow.asStateFlow()
-
-    private val _upcomingRows = MutableStateFlow<List<QueueRowData>>(emptyList())
-    val upcomingRows: StateFlow<List<QueueRowData>> = _upcomingRows.asStateFlow()
+    private val _queueState = MutableStateFlow(QueueState())
+    val queueState: StateFlow<QueueState> = _queueState.asStateFlow()
 
     /** Called when the viewed playlist identity changes - old rows/columns no longer apply. */
     fun resetView() {
-        _previousRows.value = emptyList()
-        _currentRow.value = null
-        _upcomingRows.value = emptyList()
-        _columns.value = emptyList()
+        _queueState.value = QueueState()
     }
 
     /**
-     * Appends a row to previousRows, capped at MAX_PREVIOUS_ROWS. Removes any
-     * existing entry with the same rowIndex first - previousRows represents
-     * "recently played" and should never show the same absolute playlist
-     * position twice, whether from a legitimate replay (user jumps back to
-     * an earlier row) or two near-simultaneous transitions both reporting
-     * the same outgoing row. Kept as defense-in-depth even after removing
-     * the redundant PLAYLIST_CHANGED-triggered re-fetch (see SharedViewModel)
-     * that was the main source of these near-simultaneous responses.
+     * Appends a row to a previousRows list, capped at MAX_PREVIOUS_ROWS.
+     * Removes any existing entry with the same rowIndex first - previousRows
+     * represents "recently played" and should never show the same absolute
+     * playlist position twice, whether from a legitimate replay (user jumps
+     * back to an earlier row) or two near-simultaneous transitions both
+     * reporting the same outgoing row. Pure function (takes and returns a
+     * list) rather than mutating state directly, since every call site now
+     * needs to fold its result into one single QueueState assignment
+     * alongside other field changes from the same transition.
      */
-    private fun pushToPrevious(row: QueueRowData) {
-        val deduplicated = _previousRows.value.filterNot { it.rowIndex == row.rowIndex }
+    private fun pushToPrevious(rows: List<QueueRowData>, row: QueueRowData): List<QueueRowData> {
+        val deduplicated = rows.filterNot { it.rowIndex == row.rowIndex }
         val updated = deduplicated + row
-        _previousRows.value = if (updated.size > MAX_PREVIOUS_ROWS) {
-            updated.takeLast(MAX_PREVIOUS_ROWS)
-        } else {
-            updated
+        return if (updated.size > MAX_PREVIOUS_ROWS) updated.takeLast(MAX_PREVIOUS_ROWS) else updated
+    }
+
+    /**
+     * Bumps the Play Count column of a row that's about to become "previous"
+     * by one, to match what the server-side player itself just did by
+     * finishing that song naturally. Applied at every site that pushes a row
+     * into previousRows: the row being pushed is always our locally-cached
+     * copy of what was current a moment ago, never something freshly
+     * re-fetched in the same message that reports the transition (a full
+     * resend's row list only contains the *new* current/upcoming rows, not
+     * the one that just fell out of the window) - so this staleness applies
+     * equally whether the transition arrived via PLAYLIST_ADVANCED or a full
+     * ResponsePlaylistSongs resend. Best-effort: if there's no Play Count
+     * column, or its current value doesn't parse as a plain integer (e.g. an
+     * unexpected locale-formatted thousands separator), the row is returned
+     * unchanged rather than guessing - the next full resend will correct the
+     * displayed count regardless.
+     */
+    private fun incrementPlayCount(row: QueueRowData, columns: List<ColumnInfo>): QueueRowData {
+        val columnIndex = columns.indexOfFirst { it.name == PLAY_COUNT_COLUMN_NAME }
+        if (columnIndex < 0) return row
+        val currentValue = row.values.getOrNull(columnIndex)?.toIntOrNull() ?: return row
+        val updatedValues = row.values.toMutableList().apply {
+            this[columnIndex] = (currentValue + 1).toString()
         }
+        return row.copy(values = updatedValues)
     }
 
     /**
@@ -135,15 +172,12 @@ class QueueController(private val sendMessage: (Message) -> Unit) {
             return
         }
 
+        val current = _queueState.value
+
         val newColumns = playlistSongs.columnsList.map {
             ColumnInfo(name = it.name, isNumeric = it.isNumeric)
         }
-        if (newColumns != _columns.value) {
-            // Visible columns changed on the desktop mid-session: old cached
-            // rows would no longer line up against new headers.
-            _previousRows.value = emptyList()
-            _columns.value = newColumns
-        }
+        val columnsChanged = newColumns != current.columns
 
         val rows = playlistSongs.rowsList
         val newCurrent: QueueRowData? = if (rows.isNotEmpty()) {
@@ -153,13 +187,28 @@ class QueueController(private val sendMessage: (Message) -> Unit) {
             rows.drop(1).map { QueueRowData(it.valuesList, it.rowIndex) }
         } else emptyList()
 
-        val oldCurrent = _currentRow.value
-        if (oldCurrent != null && oldCurrent.values != newCurrent?.values) {
-            pushToPrevious(oldCurrent)
+        // Visible columns changing on the desktop mid-session means old
+        // cached rows no longer line up against new headers - but the
+        // outgoing current row itself is unaffected by that, so it can still
+        // be pushed into the (now-cleared) history below in the same update.
+        val basePreviousRows = if (columnsChanged) emptyList() else current.previousRows
+        val oldCurrent = current.currentRow
+        val valuesChanged = oldCurrent != null && oldCurrent.values != newCurrent?.values
+
+        val newPreviousRows = if (valuesChanged) {
+            pushToPrevious(basePreviousRows, incrementPlayCount(oldCurrent!!, current.columns))
+        } else {
+            basePreviousRows
         }
 
-        _currentRow.value = newCurrent
-        _upcomingRows.value = newUpcoming
+        // Single assignment for the whole transition - see QueueState's
+        // doc comment for why this matters.
+        _queueState.value = QueueState(
+            columns = newColumns,
+            previousRows = newPreviousRows,
+            currentRow = newCurrent,
+            upcomingRows = newUpcoming
+        )
     }
 
     /**
@@ -178,7 +227,8 @@ class QueueController(private val sendMessage: (Message) -> Unit) {
     ) {
         if (viewedPlaylistId == null || playlistId != viewedPlaylistId) return
 
-        val upcoming = _upcomingRows.value
+        val current = _queueState.value
+        val upcoming = current.upcomingRows
         val promotedIndex = upcoming.indexOfFirst { it.rowIndex == newCurrentRow }
         if (promotedIndex < 0) {
             // The advanced-to row wasn't in our cached window - local state
@@ -189,12 +239,20 @@ class QueueController(private val sendMessage: (Message) -> Unit) {
             return
         }
 
-        _currentRow.value?.let { oldCurrent ->
-            pushToPrevious(oldCurrent)
-        }
+        val newPreviousRows = current.currentRow?.let { oldCurrent ->
+            pushToPrevious(current.previousRows, incrementPlayCount(oldCurrent, current.columns))
+        } ?: current.previousRows
 
-        _currentRow.value = upcoming[promotedIndex]
+        val newCurrentRowData = upcoming[promotedIndex]
         val remaining = upcoming.subList(promotedIndex + 1, upcoming.size)
-        _upcomingRows.value = if (trailingRow != null) remaining + trailingRow else remaining
+        val newUpcoming = if (trailingRow != null) remaining + trailingRow else remaining
+
+        // Single assignment for the whole transition - see QueueState's
+        // doc comment for why this matters.
+        _queueState.value = current.copy(
+            previousRows = newPreviousRows,
+            currentRow = newCurrentRowData,
+            upcomingRows = newUpcoming
+        )
     }
 }

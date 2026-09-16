@@ -91,10 +91,12 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
     val playlists by sharedViewModel.playlists.collectAsState()
     val activePlaylistIndex by sharedViewModel.activePlaylistIndex.collectAsState()
     val viewedPlaylistIndex by sharedViewModel.viewedPlaylistIndex.collectAsState()
-    val columns by sharedViewModel.columns.collectAsState()
-    val previousRows by sharedViewModel.previousRows.collectAsState()
-    val currentRow by sharedViewModel.currentRow.collectAsState()
-    val upcomingRows by sharedViewModel.upcomingRows.collectAsState()
+    // One atomic snapshot rather than four independent StateFlows - see
+    // QueueState's doc comment in QueueController for why that distinction
+    // mattered (an intermittent LazyColumn rendering bug traced back to
+    // collectAsState observing these fields at mutually inconsistent
+    // moments when they were four separate flows).
+    val queueState by sharedViewModel.queueState.collectAsState()
     val actionError by sharedViewModel.actionError.collectAsState()
     val mutablePlaylistsEnabled by sharedViewModel.mutablePlaylistsEnabled.collectAsState()
     val tokenPrompt by sharedViewModel.tokenPrompt.collectAsState()
@@ -107,6 +109,16 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
     // Message for the modal shutdown dialog; null means no dialog.
     var shutdownMessage by remember { mutableStateOf<String?>(null) }
 
+    // Set right before the user taps Exit, so the connection-loss handling
+    // below can tell "the user is intentionally leaving" apart from "the
+    // connection actually dropped out from under them" - both end up
+    // triggering the same disconnect()-driven connectionState change (via
+    // DisposableEffect's onDispose as the screen tears down), but only the
+    // latter should navigate anywhere. Without this, tapping Exit raced
+    // against that navigation: the screen would flash back to the connect
+    // screen for an instant before the Activity actually finished.
+    var isExitingIntentionally by remember { mutableStateOf(false) }
+
     // React to connection loss.
     //  - Strawberry closed on the desktop: modal dialog, OK exits the app,
     //    since there is nothing left to reconnect to.
@@ -117,6 +129,7 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
         // global TokenPromptDialog (MainActivity) - skip the ordinary
         // error/disconnect handling below so they don't stack.
         if (tokenPrompt is AuthController.TokenPromptState.LockedOut) return@LaunchedEffect
+        if (isExitingIntentionally) return@LaunchedEffect
         when (val state = connectionState) {
             is ConnectionState.Error -> {
                 Log.d("SongInfoScreen", "Error: ${state.message}, serverShutdown=$serverShutdown")
@@ -204,11 +217,11 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
                 val availableWidth = this.maxWidth
 
                 QueueTable(
-                    columns = columns,
+                    columns = queueState.columns,
                     availableWidth = availableWidth,
-                    previousRows = previousRows.takeLast(MAX_PREVIOUS_ROWS_SHOWN),
-                    currentRow = currentRow,
-                    upcomingRows = upcomingRows,
+                    previousRows = queueState.previousRows.takeLast(MAX_PREVIOUS_ROWS_SHOWN),
+                    currentRow = queueState.currentRow,
+                    upcomingRows = queueState.upcomingRows,
                     playlists = playlists,
                     viewedPlaylistIndex = viewedPlaylistIndex,
                     mutablePlaylistsEnabled = mutablePlaylistsEnabled,
@@ -319,7 +332,10 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
                         contentDescription = "Exit",
                         containerColor = MaterialTheme.colorScheme.outline,
                         contentColor = MaterialTheme.colorScheme.onSurface,
-                        onClick = { activity?.finish() }
+                        onClick = {
+                            isExitingIntentionally = true
+                            activity?.finish()
+                        }
                     )
                 }
             }
