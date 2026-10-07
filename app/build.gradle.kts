@@ -22,8 +22,8 @@ android {
         applicationId = "com.zudiewiener.strawberryremote"
         minSdk = 29
         targetSdk = 36
-        versionCode = 35
-        versionName = "1.0.16"
+        versionCode = 36
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
