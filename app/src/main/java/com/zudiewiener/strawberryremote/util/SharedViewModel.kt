@@ -1,4 +1,3 @@
-
 /*
  * Client for the Strawberry Music Player
  * Copyright 2026, Leopold List <leo@zudiewiener.com>
@@ -33,6 +32,7 @@ import com.zudiewiener.strawberryremote.logic.PlaylistTab
 import com.zudiewiener.strawberryremote.logic.QueueController
 import com.zudiewiener.strawberryremote.logic.QueueRowData
 import com.zudiewiener.strawberryremote.logic.QueueState
+import com.zudiewiener.strawberryremote.logic.VolumeController
 import com.zudiewiener.strawberryremote.net.ConnectionState
 import com.zudiewiener.strawberryremote.net.StrawberryConnection
 import kotlinx.coroutines.Dispatchers
@@ -89,7 +89,15 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
         }
     )
 
-    private val playerStatusController = PlayerStatusController(viewModelScope)
+    private val playerStatusController = PlayerStatusController(
+        scope = viewModelScope,
+        sendMessage = { sendMessage(it) }
+    )
+
+    private val volumeController = VolumeController(
+        scope = viewModelScope,
+        sendMessage = { sendMessage(it) }
+    )
 
     // --- Re-exported state ---
 
@@ -119,6 +127,22 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
 
     val playerStatus: StateFlow<String> = playerStatusController.playerStatus
     val remainingTime: StateFlow<String> = playerStatusController.remainingTime
+    val positionSeconds: StateFlow<Int> = playerStatusController.positionSeconds
+    val lengthSeconds: StateFlow<Int> = playerStatusController.lengthSeconds
+    val canSeek: StateFlow<Boolean> = playerStatusController.canSeek
+
+    /**
+     * False when the connected server speaks a protocol older than 6. A v5
+     * server doesn't know MSG_TYPE_REQUEST_SEEK and would disconnect us over
+     * it (REASON_DISCONNECT_UNKNOWN_MSGTYPE), so the seek slider is hidden
+     * rather than offered against it.
+     */
+    private val _seekSupported = MutableStateFlow(false)
+    val seekSupported: StateFlow<Boolean> = _seekSupported.asStateFlow()
+
+    /** True only when the server has volume control enabled; hides the volume slider otherwise. */
+    val volumeControlEnabled: StateFlow<Boolean> = volumeController.enabled
+    val volume: StateFlow<Int> = volumeController.volume
 
     val playlists: StateFlow<List<PlaylistTab>> = playlistController.playlists
     val activePlaylistIndex: StateFlow<Int> = playlistController.activePlaylistIndex
@@ -164,6 +188,8 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                     is ConnectionState.Disconnected -> {
                         authController.reset()
                         playlistController.reset()
+                        volumeController.reset()
+                        _seekSupported.value = false
                     }
                     else -> Unit
                 }
@@ -303,6 +329,24 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
         playlistController.selectTab(index)
     }
 
+    // --- Seek / volume ---
+
+    /** Called once, when the user releases the seek slider. */
+    fun seekTo(positionSeconds: Int) {
+        if (!_seekSupported.value) return
+        playerStatusController.seekTo(positionSeconds)
+    }
+
+    /** Called continuously while the volume slider is dragged; throttled inside VolumeController. */
+    fun setVolumeFromUser(volume: Int) {
+        volumeController.onUserChange(volume)
+    }
+
+    /** Called when the user lets go of the volume slider; sends the final value. */
+    fun finishVolumeChange() {
+        volumeController.onUserFinished()
+    }
+
     // --- Messaging ---
 
     fun sendMessage(message: Message) {
@@ -334,6 +378,8 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                         "SharedViewModel",
                         "Handshake accepted, server protocol version ${response.version}"
                     )
+                    _seekSupported.value = response.version >= 6
+                    volumeController.setEnabled(response.responseConnect.volumeControlEnabled)
                     // AuthController decides whether to proceed straight to
                     // finishConnectHandshake() or hold off for the token
                     // prompt - either way it calls back into
@@ -349,6 +395,8 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
             MsgType.MSG_TYPE_RESPONSE_INITIAL_INFO -> {
                 val initialInfo = response.responseInitialInfo
                 playerStatusController.applySongMetadata(initialInfo.songInfo)
+                // Programmatic only: moves the slider, never sends.
+                volumeController.onInitialVolume(initialInfo.volume)
 
                 val tabs = initialInfo.playlists.playlistsList.map {
                     PlaylistTab(id = it.id, name = it.name)
@@ -427,6 +475,15 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
             }
             MsgType.MSG_TYPE_AUTH_STATUS_CHANGED -> {
                 authController.onAuthStatusChanged(response.authStatusChanged.authEnabled)
+            }
+            MsgType.MSG_TYPE_VOLUME_CONTROL_STATUS_CHANGED -> {
+                // Show/hide immediately, no reconnect needed.
+                volumeController.setEnabled(response.volumeControlStatusChanged.volumeControlEnabled)
+            }
+            MsgType.MSG_TYPE_VOLUME_CHANGED -> {
+                // Always sent by the server, whether or not volume control is
+                // enabled; ignored inside the controller while dragging.
+                volumeController.onVolumeChanged(response.volumeChanged.volume)
             }
             MsgType.MSG_TYPE_ENGINE_STATE_CHANGE -> {
                 when (response.engineStateChange.state) {

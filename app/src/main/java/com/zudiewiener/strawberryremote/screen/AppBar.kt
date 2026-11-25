@@ -128,6 +128,17 @@ private fun AboutDialog(onDismiss: () -> Unit) {
                     • An incorrect token can be retried - after too many incorrect attempts, the server disconnects the client as a safeguard.
                     • Turning the token requirement on or off on the player takes effect immediately for clients already connected, prompting for the token if it becomes required.
 
+                    Seeking:
+                    • Drag the slider above the playback buttons and release to jump to that point in the current song. The time on the right is the time remaining.
+                    • Seeking while a song is paused also starts playing it from the new position.
+
+                    Volume control (optional):
+                    A volume slider can be shown above the playback buttons to control the player's volume from this device.
+                    • It only appears if volume control is enabled in Strawberry's Remote settings (Tools → Settings → Remote). It is off by default.
+                    • Turning the setting on or off on the player shows or hides the slider immediately for clients already connected - no need to reconnect.
+                    • The slider follows the player's volume, so a volume change made on the desktop moves it here too.
+                    • It only makes sense when Strawberry controls the volume itself. With an optical (S/PDIF) sound output the volume is not adjusted by the player, so the slider would have no effect - leave volume control disabled in that case.
+
                     For the best view of the song list, enable auto-rotate on your device so the screen can switch to landscape and show more columns.
 
                     Song list:

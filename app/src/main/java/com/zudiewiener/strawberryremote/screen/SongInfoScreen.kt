@@ -72,6 +72,8 @@ import com.zudiewiener.strawberryremote.screen.common.PlaybackIconButton
 import com.zudiewiener.strawberryremote.screen.songinfo.MAX_PREVIOUS_ROWS_SHOWN
 import com.zudiewiener.strawberryremote.screen.songinfo.PlaylistTabsRow
 import com.zudiewiener.strawberryremote.screen.songinfo.QueueTable
+import com.zudiewiener.strawberryremote.screen.songinfo.SeekSlider
+import com.zudiewiener.strawberryremote.screen.songinfo.VolumeSlider
 import com.zudiewiener.strawberryremote.util.SharedViewModel
 import kotlinx.coroutines.launch
 import nw.remote.Message
@@ -83,10 +85,15 @@ import nw.remote.RequestPreviousTrack
 
 @Composable
 fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewModel) {
-    val remainingTime by sharedViewModel.remainingTime.collectAsState()
     val playerStatus by sharedViewModel.playerStatus.collectAsState()
     val connectionState by sharedViewModel.connectionState.collectAsState()
     val serverShutdown by sharedViewModel.serverShutdown.collectAsState()
+    val positionSeconds by sharedViewModel.positionSeconds.collectAsState()
+    val lengthSeconds by sharedViewModel.lengthSeconds.collectAsState()
+    val canSeek by sharedViewModel.canSeek.collectAsState()
+    val seekSupported by sharedViewModel.seekSupported.collectAsState()
+    val volumeControlEnabled by sharedViewModel.volumeControlEnabled.collectAsState()
+    val volume by sharedViewModel.volume.collectAsState()
 
     val playlists by sharedViewModel.playlists.collectAsState()
     val activePlaylistIndex by sharedViewModel.activePlaylistIndex.collectAsState()
@@ -242,6 +249,27 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
                 )
             }
 
+            // Seek slider: hidden against a pre-v6 server, which would
+            // disconnect us over the unknown message type.
+            if (seekSupported) {
+                SeekSlider(
+                    positionSeconds = positionSeconds,
+                    lengthSeconds = lengthSeconds,
+                    enabled = canSeek,
+                    onSeek = { sharedViewModel.seekTo(it) }
+                )
+            }
+
+            // Volume slider: shown only while the server has volume control
+            // enabled, and appears/disappears live when that setting toggles.
+            if (volumeControlEnabled) {
+                VolumeSlider(
+                    volume = volume,
+                    onVolumeChange = { sharedViewModel.setVolumeFromUser(it) },
+                    onVolumeChangeFinished = { sharedViewModel.finishVolumeChange() }
+                )
+            }
+
             // Status, remaining time, and playback controls combined into one
             // compact row - this used to be three stacked rows plus a
             // full-width Exit button, which left almost no vertical space for
@@ -261,11 +289,6 @@ fun SongInfoScreen(navController: NavController, sharedViewModel: SharedViewMode
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = remainingTime,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Spacer(modifier = Modifier.width(8.dp))

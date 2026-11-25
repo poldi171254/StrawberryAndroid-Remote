@@ -27,16 +27,27 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import nw.remote.Message
+import nw.remote.MsgType
 import nw.remote.PlayerState
+import nw.remote.RequestPlay
+import nw.remote.RequestSeek
 import nw.remote.ResponseSongMetadata
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Owns player status text and the remaining-time countdown only. The server
- * sends the authoritative position with each song info reply; between
- * replies the value is ticked down locally once per second while playing.
+ * Owns player status text, the song position/length, the remaining-time
+ * countdown, and seeking. The server sends the authoritative position with
+ * each song info reply; between replies the position is ticked forward
+ * locally once per second while playing.
  */
-class PlayerStatusController(private val scope: CoroutineScope) {
+class PlayerStatusController(
+    private val scope: CoroutineScope,
+    private val sendMessage: (Message) -> Unit
+) {
+
+    /** Only the two states a seek is defined for; everything else (stopped, idle, empty, error) is OTHER. */
+    private enum class Mode { PLAYING, PAUSED, OTHER }
 
     private val _playerStatus = MutableStateFlow("")
     val playerStatus: StateFlow<String> = _playerStatus.asStateFlow()
@@ -44,6 +55,17 @@ class PlayerStatusController(private val scope: CoroutineScope) {
     private val _remainingTime = MutableStateFlow("")
     val remainingTime: StateFlow<String> = _remainingTime.asStateFlow()
 
+    private val _positionSeconds = MutableStateFlow(0)
+    val positionSeconds: StateFlow<Int> = _positionSeconds.asStateFlow()
+
+    private val _lengthSeconds = MutableStateFlow(0)
+    val lengthSeconds: StateFlow<Int> = _lengthSeconds.asStateFlow()
+
+    /** True while a seek is meaningful: a song with a usable length is loaded and the player is playing or paused. */
+    private val _canSeek = MutableStateFlow(false)
+    val canSeek: StateFlow<Boolean> = _canSeek.asStateFlow()
+
+    private var mode = Mode.OTHER
     private var remainingSeconds = 0
     private var countdownJob: Job? = null
 
@@ -58,6 +80,9 @@ class PlayerStatusController(private val scope: CoroutineScope) {
             stopCountdown()
             remainingSeconds = 0
             _remainingTime.value = ""
+            _positionSeconds.value = 0
+            _lengthSeconds.value = 0
+            setMode(Mode.OTHER)
             return
         }
 
@@ -72,8 +97,19 @@ class PlayerStatusController(private val scope: CoroutineScope) {
         // Resync the countdown from the server's authoritative position.
         val length = response.lengthSeconds
         val position = response.positionSeconds
+        _lengthSeconds.value = length
         remainingSeconds = if (length > position) (length - position) else 0
+        _positionSeconds.value = length - remainingSeconds
         _remainingTime.value = formatRemaining(remainingSeconds)
+
+        // After the length is set: canSeek depends on it.
+        setMode(
+            when (state) {
+                PlayerState.PLAYER_STATUS_PLAYING -> Mode.PLAYING
+                PlayerState.PLAYER_STATUS_PAUSED -> Mode.PAUSED
+                else -> Mode.OTHER
+            }
+        )
 
         if (state == PlayerState.PLAYER_STATUS_PLAYING) {
             startCountdown()
@@ -84,21 +120,72 @@ class PlayerStatusController(private val scope: CoroutineScope) {
 
     fun setPlaying() {
         _playerStatus.value = "Playing"
+        setMode(Mode.PLAYING)
     }
 
     fun setPaused() {
         _playerStatus.value = "Paused"
+        setMode(Mode.PAUSED)
         stopCountdown()
     }
 
     fun setStopped() {
         _playerStatus.value = "Stopped"
+        setMode(Mode.OTHER)
         stopCountdown()
+    }
+
+    /**
+     * Seeks the current song. Called once, when the user releases the slider.
+     *
+     * Valid positions are 0 to length-1: the target is clamped into that
+     * range, and nothing is sent when no song with a usable length is loaded
+     * or the player is neither playing nor paused. A playing song gets only
+     * the RequestSeek - never a RequestPlay, which the server treats as a
+     * restart. A paused song gets the seek followed by a RequestPlay, since
+     * a seek alone leaves it paused.
+     *
+     * The server doesn't reply to a seek, so the local position is set to the
+     * sought value immediately and the countdown restarted from there; the
+     * next song info reply (requested on the server's ENGINE_STATE_CHANGE,
+     * about 300 ms after the seek settles) overwrites it with the real value.
+     */
+    fun seekTo(positionSeconds: Int) {
+        val length = _lengthSeconds.value
+        if (length <= 0 || mode == Mode.OTHER) return
+        val target = positionSeconds.coerceIn(0, length - 1)
+
+        sendMessage(
+            Message.newBuilder()
+                .setType(MsgType.MSG_TYPE_REQUEST_SEEK)
+                .setRequestSeek(RequestSeek.newBuilder().setPositionSeconds(target).build())
+                .build()
+        )
+        if (mode == Mode.PAUSED) {
+            sendMessage(
+                Message.newBuilder()
+                    .setType(MsgType.MSG_TYPE_REQUEST_PLAY)
+                    .setRequestPlay(RequestPlay.newBuilder().setPlay(true).build())
+                    .build()
+            )
+        }
+
+        remainingSeconds = length - target
+        _positionSeconds.value = target
+        _remainingTime.value = formatRemaining(remainingSeconds)
+        // A paused song starts playing via the server's ENGINE_STATE_CHANGE,
+        // whose song info reply starts the countdown.
+        if (mode == Mode.PLAYING) startCountdown()
     }
 
     fun stopCountdown() {
         countdownJob?.cancel()
         countdownJob = null
+    }
+
+    private fun setMode(newMode: Mode) {
+        mode = newMode
+        _canSeek.value = newMode != Mode.OTHER && _lengthSeconds.value > 1
     }
 
     private fun startCountdown() {
@@ -108,6 +195,7 @@ class PlayerStatusController(private val scope: CoroutineScope) {
             while (isActive && remainingSeconds > 0) {
                 delay(1.seconds)
                 remainingSeconds -= 1
+                _positionSeconds.value = _lengthSeconds.value - remainingSeconds
                 _remainingTime.value = formatRemaining(remainingSeconds)
             }
         }
